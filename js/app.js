@@ -5,7 +5,7 @@ import { library, newId, persistStorage, storageEstimate } from './library.js';
 import { odeToJoy, DEMO_TITLE } from './demo.js';
 import { icon, keysArt } from './icons.js';
 
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 const $ = s => document.querySelector(s);
 const SIMULATED = new URLSearchParams(location.search).has('demo');
 
@@ -381,6 +381,9 @@ function errorText(e) {
   if (n === 'NotFoundError' && /cancel/i.test(msg)) return null; // el usuario cerró el selector
   lastBtError = `${n}: ${msg}`;
   console.warn('Bluetooth', lastBtError);
+  if (/globally disabled/i.test(msg)) return navigator.brave
+    ? 'Brave trae el Bluetooth web desactivado: actívalo en brave://flags («Web Bluetooth API») o usa Chrome.'
+    : 'Este navegador tiene el Bluetooth web desactivado. Usa Chrome.';
   if (/adapter/i.test(msg)) return 'Chrome no tiene acceso al Bluetooth del móvil: dale permiso de «Dispositivos cercanos» a Chrome.';
   if (n === 'NotAllowedError' || /permission|blocked|denied/i.test(msg)) return 'El Bluetooth está bloqueado para Pianola en Chrome. Revisa los permisos.';
   if (n === 'SecurityError') return 'Bluetooth solo funciona si Pianola se abre desde una dirección https.';
@@ -393,7 +396,8 @@ function browserInfo() {
   const inApp = /; wv\)/.test(ua) ? 'navegador integrado de otra app' : null;
   const samsung = /SamsungBrowser\/(\d+)/.exec(ua);
   const chrome = /Chrome\/(\d+)/.exec(ua);
-  const name = inApp || (samsung ? `Samsung Internet ${samsung[1]}` : chrome ? `Chrome ${chrome[1]}` : 'otro navegador');
+  const engine = chrome ? ` (Chromium ${chrome[1]})` : '';
+  const name = inApp || (navigator.brave ? `Brave${engine}` : samsung ? `Samsung Internet ${samsung[1]}` : chrome ? `Chrome ${chrome[1]}` : 'otro navegador');
   const standalone = matchMedia('(display-mode: standalone)').matches;
   const android = /Android (\d+)/.exec(ua);
   return `${name}${android ? ` · Android ${android[1]}` : ''} · ${standalone ? 'app instalada' : 'pestaña'}`;
