@@ -1,0 +1,12 @@
+{
+  "hosting": {
+    "public": ".",
+    "ignore": ["**/.*", "firebase.json", "package.json", "README.md", "tests/**", "**/LICENSE-*"],
+    "headers": [
+      {
+        "source": "**/*.@(js|css|html|webmanifest)",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      }
+    ]
+  }
+}

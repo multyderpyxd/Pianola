@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Pianola</title>
+  <meta name="description" content="Reproductor de archivos MIDI para pianos Roland por Bluetooth">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3eee5">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#121110">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="preload" href="fonts/instrument-serif-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/geist-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="top">
+      <h1 class="brand">Pianola</h1>
+      <button class="conn" id="connBtn" data-state="idle" type="button">
+        <span class="dot" aria-hidden="true"></span><span class="conn-label">Conectar</span>
+      </button>
+      <button class="icon-btn" id="settingsBtn" type="button" aria-label="Ajustes"></button>
+    </header>
+
+    <div class="toolbar">
+      <label class="search">
+        <span class="search-ico" aria-hidden="true"></span>
+        <input id="search" type="search" placeholder="Buscar en tu biblioteca" autocomplete="off" enterkeyhint="search">
+      </label>
+      <button class="add-btn" id="addBtn" type="button" aria-label="Añadir canciones MIDI"></button>
+    </div>
+
+    <nav class="filters" aria-label="Filtro">
+      <button type="button" class="filter on" data-filter="all">Todas <span class="count" id="countAll"></span></button>
+      <button type="button" class="filter" data-filter="fav">Favoritas <span class="count" id="countFav"></span></button>
+      <button type="button" class="sort" id="sortBtn">Recientes</button>
+    </nav>
+
+    <ul class="list" id="list" aria-label="Canciones"></ul>
+    <section class="empty" id="empty" hidden></section>
+  </div>
+
+  <div class="mini" id="mini" hidden>
+    <div class="mini-progress"><span id="miniBar"></span></div>
+    <button class="mini-main" id="miniOpen" type="button" aria-label="Abrir reproductor">
+      <span class="mini-title" id="miniTitle"></span>
+      <span class="mini-sub" id="miniSub"></span>
+    </button>
+    <button class="icon-btn light" id="miniPlay" type="button" aria-label="Reproducir"></button>
+    <button class="icon-btn light" id="miniNext" type="button" aria-label="Siguiente"></button>
+  </div>
+
+  <section class="player" id="player" aria-hidden="true" aria-label="Reproductor">
+    <header class="player-top">
+      <button class="icon-btn light" id="playerClose" type="button" aria-label="Cerrar reproductor"></button>
+      <span class="player-kicker" id="playerKicker">Pianola</span>
+      <button class="icon-btn light" id="playerMore" type="button" aria-label="Opciones de la canción"></button>
+    </header>
+    <div class="stage" id="stage">
+      <canvas id="roll"></canvas>
+      <canvas id="keys"></canvas>
+    </div>
+    <div class="now">
+      <h2 class="now-title" id="nowTitle"></h2>
+      <p class="now-meta" id="nowMeta"></p>
+    </div>
+    <div class="seek">
+      <input type="range" id="seek" min="0" max="1000" value="0" step="100" aria-label="Posición">
+      <div class="times"><span id="tCur">0:00</span><span id="tDur">0:00</span></div>
+    </div>
+    <div class="controls">
+      <button class="icon-btn light toggle" id="shuffleBtn" type="button" aria-label="Aleatorio" aria-pressed="false"></button>
+      <button class="icon-btn light big" id="prevBtn" type="button" aria-label="Anterior"></button>
+      <button class="play-btn" id="playBtn" type="button" aria-label="Reproducir"></button>
+      <button class="icon-btn light big" id="nextBtn" type="button" aria-label="Siguiente"></button>
+      <button class="icon-btn light toggle" id="repeatBtn" type="button" aria-label="Repetir" data-mode="off"></button>
+    </div>
+    <div class="chips">
+      <button class="chip" id="speedChip" type="button">Velocidad 100 %</button>
+      <button class="chip" id="soundChip" type="button">Sonido original</button>
+    </div>
+  </section>
+
+  <div class="backdrop" id="backdrop"></div>
+  <section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="sheet-grip" aria-hidden="true"></div>
+    <div class="sheet-body" id="sheetBody"></div>
+  </section>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"><span id="toastText"></span><button type="button" id="toastAction"></button></div>
+  <input type="file" id="fileInput" multiple accept=".mid,.midi,.kar,.rmi,audio/midi,audio/mid,audio/x-midi" hidden>
+  <div class="drop" id="drop" aria-hidden="true">Suelta tus archivos MIDI</div>
+</body>
+</html>

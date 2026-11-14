@@ -1,0 +1,11 @@
+{
+  "name": "pianola",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PWA que reproduce archivos MIDI en un Roland FP-10 por Bluetooth MIDI",
+  "scripts": {
+    "test": "node --test tests/core.test.mjs",
+    "serve": "python3 -m http.server 8080"
+  }
+}
