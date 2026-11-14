@@ -14,7 +14,7 @@ Web app instalable (PWA) que reproduce archivos MIDI en un Roland FP-10 por Blue
 
 ## Dónde está publicada
 
-**https://multyderpyxd.github.io/pianola/** — GitHub Pages sirve la raíz de la rama `main` tal cual (sin compilación; `.nojekyll` evita el procesado de Jekyll). Cada push a `main` publica la nueva versión; sube también `VERSION` en `sw.js` para que los móviles instalados se actualicen.
+**https://multyderpyxd.github.io/Pianola/** — GitHub Pages sirve la raíz de la rama `main` tal cual (sin compilación; `.nojekyll` evita el procesado de Jekyll). Cada push a `main` publica la nueva versión; sube también `VERSION` en `sw.js` para que los móviles instalados se actualicen.
 
 Alternativa con Firebase Hosting (incluido `firebase.json`): `firebase deploy --only hosting --project TU-PROYECTO`.
 
