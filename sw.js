@@ -1,5 +1,5 @@
 // Service worker: funciona sin conexión y recibe archivos MIDI compartidos desde otras apps.
-const VERSION = 'pianola-1.0.0';
+const VERSION = 'pianola-1.0.1';
 const SHELL = [
   './',
   './index.html',
@@ -23,7 +23,9 @@ const SHELL = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION)
+    .then(c => c.addAll(SHELL.map(u => new Request(u, { cache: 'reload' }))))  // saltar la caché HTTP de GitHub Pages
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {

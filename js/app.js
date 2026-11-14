@@ -5,7 +5,7 @@ import { library, newId, persistStorage, storageEstimate } from './library.js';
 import { odeToJoy, DEMO_TITLE } from './demo.js';
 import { icon, keysArt } from './icons.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const $ = s => document.querySelector(s);
 const SIMULATED = new URLSearchParams(location.search).has('demo');
 
@@ -374,15 +374,42 @@ addEventListener('drop', e => {
 });
 
 // ---------- Conexión ----------
+let lastBtError = '';
 function errorText(e) {
-  const n = e?.name || '';
-  if (n === 'NotFoundError') {
-    if (/cancel/i.test(e.message || '')) return null; // el usuario cerró el selector
-    return 'Activa el Bluetooth del móvil (y la ubicación, si te lo pide) y vuelve a intentarlo.';
-  }
-  if (n === 'NotAllowedError') return 'Chrome no tiene permiso para usar Bluetooth. Revisa «Dispositivos cercanos» y la ubicación.';
+  const n = e?.name || 'Error';
+  const msg = e?.message || '';
+  if (n === 'NotFoundError' && /cancel/i.test(msg)) return null; // el usuario cerró el selector
+  lastBtError = `${n}: ${msg}`;
+  console.warn('Bluetooth', lastBtError);
+  if (/adapter/i.test(msg)) return 'Chrome no tiene acceso al Bluetooth del móvil: dale permiso de «Dispositivos cercanos» a Chrome.';
+  if (n === 'NotAllowedError' || /permission|blocked|denied/i.test(msg)) return 'El Bluetooth está bloqueado para Pianola en Chrome. Revisa los permisos.';
   if (n === 'SecurityError') return 'Bluetooth solo funciona si Pianola se abre desde una dirección https.';
-  return 'No pude conectar con el piano. Apágalo y enciéndelo, y vuelve a intentarlo.';
+  if (n === 'NotFoundError') return `Chrome no pudo buscar el piano (${msg || n}).`;
+  return `No pude conectar con el piano (${msg || n}). Apágalo y enciéndelo, y vuelve a intentarlo.`;
+}
+
+function browserInfo() {
+  const ua = navigator.userAgent;
+  const inApp = /; wv\)/.test(ua) ? 'navegador integrado de otra app' : null;
+  const samsung = /SamsungBrowser\/(\d+)/.exec(ua);
+  const chrome = /Chrome\/(\d+)/.exec(ua);
+  const name = inApp || (samsung ? `Samsung Internet ${samsung[1]}` : chrome ? `Chrome ${chrome[1]}` : 'otro navegador');
+  const standalone = matchMedia('(display-mode: standalone)').matches;
+  const android = /Android (\d+)/.exec(ua);
+  return `${name}${android ? ` · Android ${android[1]}` : ''} · ${standalone ? 'app instalada' : 'pestaña'}`;
+}
+
+async function fillDiagnostics(root) {
+  const el = root.querySelector('[data-diag]');
+  if (!el) return;
+  let avail = 'no disponible';
+  try {
+    if (navigator.bluetooth?.getAvailability) avail = (await navigator.bluetooth.getAvailability()) ? 'sí' : 'no';
+    else if (navigator.bluetooth) avail = 'sí (sin comprobación)';
+  } catch (e) { avail = `error (${e.message})`; }
+  el.innerHTML = `Bluetooth accesible para el navegador: <b>${esc(avail)}</b><br>
+    ${esc(browserInfo())}<br>
+    Último error: ${lastBtError ? `<b>${esc(lastBtError)}</b>` : 'ninguno'}`;
 }
 
 async function ensureConnected() {
@@ -397,7 +424,7 @@ async function ensureConnected() {
     return true;
   } catch (e) {
     const t = errorText(e);
-    if (t) toast(t, { ms: 5000 });
+    if (t) toast(t, { ms: 9000, action: 'Ayuda', onAction: connSheet });
     return false;
   }
 }
@@ -460,29 +487,33 @@ function connSheet() {
     ${helpHTML()}
   </div>`;
   openSheet(html, {
-    onOpen: body => body.addEventListener('click', async e => {
+    onOpen: body => { fillDiagnostics(body); body.addEventListener('click', async e => {
       const c = e.target.closest('[data-c]')?.dataset.c;
       if (c === 'test') testSound();
       else if (c === 'off') { resumeAfterReconnect = false; player.pause(); ble.disconnect(); }
-      else if (c === 'on') { if (await ensureConnected()) toast(`Conectado a ${ble.name}`); }
-    }),
+      else if (c === 'on') { if (await ensureConnected()) toast(`Conectado a ${ble.name}`); else fillDiagnostics(body); }
+    }); },
   });
 }
 
 function helpHTML() {
-  return `<h4>Si no aparece el piano</h4>
+  return `<h4>Si no conecta</h4>
     <ol class="steps">
+      <li>Permisos de Chrome en Android: <b>Ajustes → Aplicaciones → Chrome → Permisos</b>. Pon «Dispositivos cercanos» en <b>Permitir</b> y «Ubicación» en <b>Permitir solo mientras se usa</b>. Tener el Bluetooth y la ubicación del móvil encendidos no basta si Chrome no tiene estos permisos.</li>
+      <li>Permiso del sitio: en Chrome, abre la web, toca el icono a la izquierda de la dirección → <b>Permisos</b>, y quita cualquier bloqueo de Bluetooth o «Restablece permisos».</li>
+      <li>Ábrela en <b>Chrome</b> o desde el icono instalado, no dentro de otra app (WhatsApp, Telegram, la app de Claude…) ni en Samsung Internet.</li>
       <li>Enciende el FP-10. Cuando su Bluetooth está listo para conectar, el botón <b>FUNCTION</b> se ilumina.</li>
       <li>No lo emparejes desde los ajustes de Bluetooth de Android: se conecta desde aquí. Si ya lo emparejaste, olvídalo en Ajustes y vuelve a probar.</li>
-      <li>Cuando Chrome lo pida, permite «Dispositivos cercanos» (y la ubicación en Android antiguos).</li>
       <li>El piano atiende a una sola app a la vez: cierra Piano Every Day o Roland Piano App si están conectadas.</li>
-    </ol>`;
+    </ol>
+    <h4>Diagnóstico</h4>
+    <p class="diag" data-diag>Comprobando…</p>`;
 }
 
 function helpSheet(unsupported = false) {
   openSheet(`<h3>${unsupported ? 'Este navegador no tiene Bluetooth' : 'Conexión'}</h3>
     ${unsupported ? '<p class="sub">Abre Pianola con Chrome en Android, desde su dirección https, e instálala con «Añadir a pantalla de inicio».</p>' : ''}
-    ${helpHTML()}`);
+    ${helpHTML()}`, { onOpen: fillDiagnostics });
 }
 
 async function testSound() {
@@ -753,6 +784,7 @@ async function settingsSheet() {
       <button class="btn ghost" type="button" data-a="demo">Añadir demo</button></div>
     <p class="foot">Pianola ${VERSION} · reproductor MIDI para Roland FP-10${SIMULATED ? ' · modo simulado' : ''}</p>`, {
     onOpen: body => {
+      fillDiagnostics(body);
       body.addEventListener('change', e => {
         const k = e.target.dataset.s;
         if (!k) return;
@@ -992,7 +1024,15 @@ async function init() {
   renderList();
   await importInbox();
   if ('serviceWorker' in navigator && !SIMULATED) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('./sw.js').then(r => r.update()).catch(() => {});
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      // hay versión nueva: recargar una vez, salvo si está sonando algo
+      if (!hadController || reloaded || player.playing) return;
+      reloaded = true;
+      location.reload();
+    });
   }
   ble.reconnectKnown().catch(() => {});
 }
