@@ -160,3 +160,22 @@ test('SysEx de volumen general: cabe en un paquete y lleva marca antes del F7', 
   assert.deepEqual([...packet], [0x80 | ((0x0123 >> 7) & 0x3f), lo, 0x90, 60, 100, lo, 0xf0, 0x7f, 0x7f, 0x04, 0x01, 0x00, 0x50, lo, 0xf7, lo, 0x80, 60, 0]);
   assert.ok(packet.length <= 20);
 });
+
+import { analyzeMidi } from '../js/quality.js';
+import { buildTimeline } from '../js/midi.js';
+const quality = f => { const m = parseMidi(readFileSync(new URL(f, fx))); return analyzeMidi(m, buildTimeline(m)); };
+
+test('calidad: interpretación real de ASAP → Interpretada con nota alta', () => {
+  const q = quality('asap-performance.mid');
+  assert.equal(q.label, 'performed');
+  assert.ok(q.score >= 80, `nota ${q.score}`);
+});
+
+test('calidad: partitura de ASAP y folk de Nottingham → no interpretadas, nota baja', () => {
+  for (const f of ['asap-score.mid', 'nottingham-folk.mid']) {
+    const q = quality(f);
+    assert.notEqual(q.label, 'performed', f);
+    assert.ok(q.score < 50, `${f}: nota ${q.score}`);
+    assert.ok(q.reasons.length > 0);
+  }
+});

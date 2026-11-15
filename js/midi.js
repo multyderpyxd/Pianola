@@ -47,6 +47,8 @@ export function parseMidi(input) {
 
 function parseTrack(u8, start, end) {
   const events = [];
+  const texts = [];
+  let timeSigs = 0, keySigs = 0;
   let p = start, tick = 0, status = 0, name = '';
   const readVar = () => {
     let v = 0, b, n = 0;
@@ -75,9 +77,14 @@ function parseTrack(u8, start, end) {
         if (type === 0x51 && data.length >= 3) {
           const uspq = (data[0] << 16) | (data[1] << 8) | data[2];
           if (uspq > 0) events.push({ tick, kind: 'tempo', uspq });
-        } else if ((type === 0x03 || type === 0x01) && !name && data.length) {
-          if (type === 0x03) name = decodeText(data);
         } else if (type === 0x2f) break;
+        else if (type === 0x58) timeSigs++;
+        else if (type === 0x59) keySigs++;
+        if (type >= 0x01 && type <= 0x07 && data.length) {
+          const txt = decodeText(data);
+          if (type === 0x03 && !name) name = txt;
+          if (texts.length < 24) texts.push(txt.slice(0, 160));
+        }
         continue;
       }
       if (b === 0xf0 || b === 0xf7) { const len = readVar(); p += len; continue; }
@@ -98,7 +105,7 @@ function parseTrack(u8, start, end) {
   } catch (e) {
     if (!(e instanceof RangeError)) throw e;   // pista truncada: nos quedamos con lo leído
   }
-  return { name, events };
+  return { name, events, texts, timeSigs, keySigs };
 }
 
 const MIN_NOTE_MS = 8;
@@ -197,6 +204,7 @@ export function buildTimeline(midi) {
     hasDrums: channels.has(9),
     trackCount: tracks.filter(t => t.events.some(e => e.kind === 'ch')).length,
     trackNames,
+    toMs,
   };
 }
 
