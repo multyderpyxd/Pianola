@@ -8,7 +8,8 @@ const PAGE_SIZE = 30;
 export const ONLINE_SOURCE = { id: 'bitmidi', name: 'BitMidi', url: BASE };
 
 export const keyOf = item => `${item.source}:${item.sourceId}`;
-export const isOnlineId = id => typeof id === 'string' && id.startsWith('bitmidi:');
+export const isOnlineId = id => typeof id === 'string' && /^(bitmidi|cat):/.test(id);
+const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
 export function cleanTitle(name = '') {
   let t = name
@@ -25,6 +26,7 @@ export function cleanTitle(name = '') {
 function normalize(m) {
   return {
     source: 'bitmidi',
+    sourceName: 'BitMidi',
     sourceId: String(m.id),
     name: m.name || `${m.id}.mid`,
     title: cleanTitle(m.name),
@@ -68,4 +70,69 @@ export async function downloadOnline(item, { signal } = {}) {
   const buf = await res.arrayBuffer();
   if (buf.byteLength > 5 * 1024 * 1024) throw new Error('archivo demasiado grande');
   return buf;
+}
+
+// ---------- Catálogo Pianola (colecciones abiertas en GitHub, ya analizadas) ----------
+const LABELS_BY_CODE = ['performed', 'expressive', 'mechanical'];
+let catalogPromise = null;
+
+export function loadCatalog() {
+  if (!catalogPromise) {
+    catalogPromise = fetch('./catalog/index.json')
+      .then(r => { if (!r.ok) throw new Error(`catálogo ${r.status}`); return r.json(); })
+      .then(prepareCatalog)
+      .catch(e => { catalogPromise = null; throw e; });
+  }
+  return catalogPromise;
+}
+
+const lastName = full => (full || '').split(' ').filter(Boolean).pop() || full;
+
+function prepareCatalog(c) {
+  const cols = c.collections.map(col => ({ ...col, count: 0 }));
+  const items = c.items.map(x => {
+    const col = cols[x[0]];
+    col.count++;
+    const [, path, title, author, performer, secs, score, label, pianoOnly] = x;
+    const display = col.genre === 'Pop' ? `${title} — ${author}` : `${lastName(author)}: ${title}`;
+    return {
+      source: 'cat',
+      sourceId: `${col.id}:${path}`,
+      sourceName: col.name,
+      collection: col.id,
+      genre: col.genre,
+      name: path.split('/').pop(),
+      title: display,
+      work: title,
+      author,
+      performer,
+      plays: 0,
+      durSec: secs,
+      quality: { v: 1, score, label: LABELS_BY_CODE[label], pianoOnly: !!pianoOnly, reasons: [], f: {}, d: secs * 1000 },
+      pageUrl: col.url,
+      fileUrl: col.base + path.split('/').map(encodeURIComponent).join('/'),
+      search: norm(`${title} ${author} ${performer} ${col.name} ${col.genre}`),
+    };
+  });
+  const composers = new Map();
+  for (const it of items) if (it.genre !== 'Pop') composers.set(it.author, (composers.get(it.author) || 0) + 1);
+  return {
+    built: c.built,
+    collections: cols,
+    items,
+    composers: [...composers.entries()].sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ name, n })),
+  };
+}
+
+export function searchCatalog(cat, { q = '', col = null, composer = null } = {}) {
+  let list = cat.items;
+  if (col) list = list.filter(it => it.collection === col);
+  if (composer) list = list.filter(it => it.author === composer);
+  const tokens = norm(q).split(/\s+/).filter(Boolean);
+  if (tokens.length) {
+    list = list.filter(it => tokens.every(t => it.search.includes(t)));
+    const nq = norm(q);
+    list = list.slice().sort((a, b) => (norm(b.title).includes(nq) - norm(a.title).includes(nq)) || b.quality.score - a.quality.score);
+  }
+  return list;
 }

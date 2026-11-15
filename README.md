@@ -5,6 +5,8 @@ Web app instalable (PWA) que reproduce archivos MIDI en un Roland FP-10 por Blue
 ## Qué hace
 
 - Biblioteca local de canciones (IndexedDB): importar varios `.mid` a la vez, buscar, favoritas, renombrar, eliminar con «Deshacer» y ordenar por recientes, A–Z o más tocadas.
+- **Catálogo Pianola**: 2 432 obras de colecciones abiertas (concertistas en Disklavier, rollos Welte de 1905-1932, pop al piano) con su calidad ya analizada; búsqueda local por obra, compositor o intérprete y descarga directa desde GitHub (docs/catalogo.md).
+- **Calidad**: cada MIDI se clasifica como Interpretada, Expresiva o Mecánica con una nota de 0 a 100 y su porqué (docs/calidad.md, 99,95 % de acierto en la validación).
 - **Explorar**: busca en el archivo público de [BitMidi](https://bitmidi.com) (más de 100.000 MIDIs), escucha cualquier resultado en el piano sin guardarlo y guárdalo con ＋. La API de búsqueda y las descargas de BitMidi admiten CORS, así que no hace falta servidor propio.
 - **Listas**: crea listas, añade canciones (selector múltiple o desde el menú de cada canción), reordénalas y reprodúcelas de principio a fin.
 - **Temporizador**: para la música tras 15–120 min o al terminar la canción, dejando acabar la que suena.
@@ -60,7 +62,11 @@ js/midi.js          lector SMF + línea temporal en ms (+ escritor mínimo)
 js/ble.js           Bluetooth MIDI: conexión, empaquetado, cola de escritura, entrada
 js/player.js        reloj, envío a tiempo, saltos con recuperación de estado, modos
 js/library.js       IndexedDB (canciones, archivos y listas)
-js/online.js        búsqueda y descarga en BitMidi
+js/online.js        BitMidi y catálogo: búsqueda y descarga
+js/quality.js       detector de calidad
+catalog/index.json  índice del catálogo (tools/build-catalog.mjs)
+tools/              evaluación del detector y construcción del catálogo
+docs/               fuentes, calidad y catálogo
 js/app.js           interfaz
 js/clock-worker.js  reloj en un worker
 js/demo.js          «Himno de la alegría» generado al vuelo
