@@ -59,6 +59,8 @@ index.html, styles.css, manifest.webmanifest, sw.js
 js/midi.js          lector SMF + línea temporal en ms (+ escritor mínimo)
 js/ble.js           Bluetooth MIDI: conexión, empaquetado, cola de escritura, entrada
 js/player.js        reloj, envío a tiempo, saltos con recuperación de estado, modos
+js/library.js       IndexedDB (canciones, archivos y listas)
+js/online.js        búsqueda y descarga en BitMidi
 js/app.js           interfaz
 js/clock-worker.js  reloj en un worker
 js/demo.js          «Himno de la alegría» generado al vuelo
