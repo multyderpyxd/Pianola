@@ -555,3 +555,6 @@ details > div { padding-bottom: 12px; color: var(--ink); font-size: 15px; }
 .list-note .back svg { width: 18px; height: 18px; }
 .list-note b { color: var(--ink); font-weight: 500; }
 .pl-empty .btn { margin-top: 10px; }
+
+.col-card.col-sm button { padding: 12px 0; gap: 2px; }
+.col-card.col-sm .col-name { font-size: 21px; }

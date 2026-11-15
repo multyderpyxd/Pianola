@@ -7,7 +7,7 @@ import { searchOnline, downloadOnline, keyOf, isOnlineId, loadCatalog, searchCat
 import { odeToJoy, DEMO_TITLE } from './demo.js';
 import { icon, keysArt } from './icons.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const $ = s => document.querySelector(s);
 const SIMULATED = new URLSearchParams(location.search).has('demo');
 
@@ -48,7 +48,16 @@ let onlineTimer = null;
 online.sort = 'relevance';
 online.onlyPerformed = false;
 online.source = readJSON('pianola.settings').exploreSource || 'catalog';
-const cat = { data: null, loading: false, error: null, col: null, composer: null, limit: 60 };
+const cat = { data: null, loading: false, error: null, col: null, composer: null, curated: null, limit: 60 };
+
+// Colecciones temáticas sobre el catálogo (por título, intérprete y duración)
+const GREAT_PIANISTS = /paderewski|debussy|busoni|hofmann|lh[eé]vinne|backhaus|carre[nñ]o|landowska|scharwenka|pachmann|sauer|d'albert|grieg|saint-sa[eë]ns|mahler|reger|scriabin|skriabin|godowsky|rachmanin|granados|gabrilowitsch|dohn[aá]nyi|reisenauer|ganz|ney|stavenhagen|grainger/i;
+const CURATED = [
+  { id: 'sleep', name: 'Para dormir', desc: 'Nocturnos, nanas, romanzas y movimientos lentos, tocados por pianistas', test: it => it.genre !== 'Pop' && it.durSec <= 720 && it.quality.label === 'performed' && /noct|berceuse|lullab|wiegen|cradle|r[eê]verie|tr[aä]umerei|romanc|romanz|adagio|andante|largo|lento|[eé]l[eé]gie|consolation|liebestr|clair de lune|moonlight|barcarol|ave maria|sarabande|gymnop|pavan|serenad|nachtst|notturno/i.test(it.work) },
+  { id: 'legends', name: 'Leyendas del piano', desc: 'Rollos grabados por Paderewski, Busoni, Hofmann, Debussy, Carreño…', test: it => it.collection === 'supra' && GREAT_PIANISTS.test(it.performer) },
+  { id: 'virtuoso', name: 'Virtuosismo', desc: 'Estudios, rapsodias, tocatas y polonesas de alto voltaje', test: it => it.genre !== 'Pop' && /[eé]tude|estudio|rhapsod|rapsod|toccat|islamey|mephisto|polon|feux|wilde jagd|campanella|scherzo/i.test(it.work) },
+  { id: 'dance', name: 'Bailes de los años 20', desc: 'Foxtrots, valses y tangos de rollo de pianola', test: it => it.collection === 'supra' && /fox|trot|walzer|waltz|valse|tango|one-step|two-step|shimmy|rag|blues|march|marsch/i.test(it.work) },
+];
 
 // Calidad de resultados online: se calcula al vuelo y se guarda en el móvil
 const qcache = new Map(Object.entries(readJSON('pianola.qcache')));
@@ -359,9 +368,24 @@ function sourceSwitch() {
   return `<li class="src-switch">${b('catalog', 'Catálogo')}${b('bitmidi', 'BitMidi')}</li>`;
 }
 
+// una versión por obra (la mejor puntuada), para no repetir la misma pieza
+function curatedItems(c, list = cat.data.items) {
+  const best = new Map();
+  for (const it of list) {
+    if (!c.test(it)) continue;
+    const k = `${it.author}|${it.work}`;
+    if (!best.has(k) || best.get(k).quality.score < it.quality.score) best.set(k, it);
+  }
+  return [...best.values()];
+}
+
 function catalogList() {
   if (!cat.data) return [];
   let list = searchCatalog(cat.data, { q: query, col: cat.col, composer: cat.composer });
+  if (cat.curated) {
+    const c = CURATED.find(x => x.id === cat.curated);
+    if (c) list = curatedItems(c, list);
+  }
   if (online.onlyPerformed) list = list.filter(it => it.quality.label === 'performed');
   if (online.sort === 'quality') list = list.slice().sort((a, b) => b.quality.score - a.quality.score);
   return list;
@@ -396,7 +420,7 @@ function renderCatalog() {
       : '<li class="pl-empty loading">Cargando catálogo…</li>');
     return;
   }
-  const browsing = !query && !cat.col && !cat.composer;
+  const browsing = !query && !cat.col && !cat.composer && !cat.curated;
   if (browsing) {
     const d = cat.data;
     list.innerHTML = sourceSwitch()
@@ -406,16 +430,24 @@ function renderCatalog() {
           <span class="col-desc">${esc(c.full)}</span>
           <span class="col-lic">${esc(c.genre)} · licencia ${esc(c.license)}</span>
         </button></li>`).join('')
+      + `<li class="list-head">Colecciones</li>`
+      + CURATED.map(c => {
+        const n = curatedItems(c).length;
+        return n ? `<li class="col-card col-sm"><button type="button" data-act="catcur" data-cur="${c.id}">
+          <span class="col-name">${esc(c.name)} <small>${n}</small></span><span class="col-lic">${esc(c.desc)}</span></button></li>` : '';
+      }).join('')
       + `<li class="list-head">Compositores</li>
          <li class="list-tools">${d.composers.slice(0, 18).map(c => `<button class="chip-s" type="button" data-act="catcomp" data-comp="${esc(c.name)}">${esc(c.name.split(' ').pop())} <small>${c.n}</small></button>`).join('')}</li>`;
     return;
   }
   const all = catalogList();
   const shown = all.slice(0, cat.limit);
-  const crumb = cat.col ? cat.data.collections.find(c => c.id === cat.col)?.name : cat.composer || '';
+  const crumb = cat.curated ? CURATED.find(c => c.id === cat.curated)?.name
+    : cat.col ? cat.data.collections.find(c => c.id === cat.col)?.name : cat.composer || '';
   list.innerHTML = sourceSwitch()
     + `<li class="list-note"><button class="back" type="button" data-act="cathome">${icon.back}Catálogo</button>${crumb ? ` · <b>${esc(crumb)}</b>` : ''} · ${all.length.toLocaleString('es-ES')} obra${all.length === 1 ? '' : 's'}</li>
        <li class="list-tools">
+         ${all.length ? `<button class="chip-s on" type="button" data-act="catplay">▶ Reproducir</button>` : ''}
          <button class="chip-s${online.sort === 'quality' ? ' on' : ''}" type="button" data-act="osort">${online.sort === 'quality' ? 'Orden: mejor calidad' : 'Orden: relevancia'}</button>
          <button class="chip-s${online.onlyPerformed ? ' on' : ''}" type="button" data-act="operf" aria-pressed="${online.onlyPerformed}">Solo interpretadas</button>
        </li>`
@@ -884,9 +916,18 @@ $('#list').addEventListener('click', e => {
       if (online.source === 'bitmidi') scheduleOnlineSearch(true);
       renderList();
       break;
-    case 'catcol': cat.col = btn.dataset.col; cat.composer = null; cat.limit = 60; renderList(); scrollTo(0, 0); break;
-    case 'catcomp': cat.composer = btn.dataset.comp; cat.col = null; cat.limit = 60; renderList(); scrollTo(0, 0); break;
-    case 'cathome': cat.col = null; cat.composer = null; cat.limit = 60; if (query) { query = ''; $('#search').value = ''; } renderList(); break;
+    case 'catcol': cat.col = btn.dataset.col; cat.composer = null; cat.curated = null; cat.limit = 60; renderList(); scrollTo(0, 0); break;
+    case 'catcomp': cat.composer = btn.dataset.comp; cat.col = null; cat.curated = null; cat.limit = 60; renderList(); scrollTo(0, 0); break;
+    case 'catcur': cat.curated = btn.dataset.cur; cat.col = null; cat.composer = null; cat.limit = 60; renderList(); scrollTo(0, 0); break;
+    case 'catplay': {
+      const list = catalogList();
+      if (!list.length) break;
+      const ids = list.map(r => savedFor(r)?.id || keyOf(r));
+      queueName = cat.curated ? CURATED.find(c => c.id === cat.curated)?.name : null;
+      startQueue(ids, 0);
+      break;
+    }
+    case 'cathome': cat.col = null; cat.composer = null; cat.curated = null; cat.limit = 60; if (query) { query = ''; $('#search').value = ''; } renderList(); break;
     case 'catmore': cat.limit += 60; renderList(); break;
     case 'catretry': ensureCatalog(); renderList(); break;
     case 'osort': online.sort = online.sort === 'quality' ? 'relevance' : 'quality'; renderList(); break;
