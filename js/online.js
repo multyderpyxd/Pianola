@@ -11,12 +11,15 @@ export const keyOf = item => `${item.source}:${item.sourceId}`;
 export const isOnlineId = id => typeof id === 'string' && id.startsWith('bitmidi:');
 
 export function cleanTitle(name = '') {
-  return name
+  let t = name
     .replace(/\.(midi?|kar|rmi)$/i, '')
     .replace(/_+/g, ' ')
     .replace(/''/g, '"')
     .replace(/\s+/g, ' ')
-    .trim() || 'Sin título';
+    .trim();
+  if (!/\s/.test(t) && t.includes('-')) t = t.replace(/-+/g, ' ');          // nombres tipo «frederic-chopin-nocturne»
+  if (t === t.toLowerCase()) t = t.replace(/(^|\s)(\p{L})/gu, (m, a, c) => a + c.toUpperCase());
+  return t || 'Sin título';
 }
 
 function normalize(m) {

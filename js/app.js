@@ -6,7 +6,7 @@ import { searchOnline, downloadOnline, keyOf, isOnlineId } from './online.js';
 import { odeToJoy, DEMO_TITLE } from './demo.js';
 import { icon, keysArt } from './icons.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const $ = s => document.querySelector(s);
 const SIMULATED = new URLSearchParams(location.search).has('demo');
 

@@ -1,5 +1,5 @@
 // Service worker: funciona sin conexión y recibe archivos MIDI compartidos desde otras apps.
-const VERSION = 'pianola-1.1.0';
+const VERSION = 'pianola-1.1.1';
 const SHELL = [
   './',
   './index.html',
