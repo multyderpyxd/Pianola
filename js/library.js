@@ -2,7 +2,7 @@
 // para que listar sea rápido aunque tengas cientos de canciones.
 
 const DB_NAME = 'pianola';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 let dbPromise = null;
 
 function open() {
@@ -13,7 +13,9 @@ function open() {
       const db = req.result;
       if (!db.objectStoreNames.contains('songs')) db.createObjectStore('songs', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('files')) db.createObjectStore('files');
+      if (!db.objectStoreNames.contains('playlists')) db.createObjectStore('playlists', { keyPath: 'id' });
     };
+    req.onblocked = () => console.warn('IndexedDB: actualización bloqueada por otra pestaña');
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
@@ -67,6 +69,18 @@ export const library = {
       t.objectStore('songs').delete(id);
       t.objectStore('files').delete(id);
     });
+  },
+};
+
+export const playlistStore = {
+  async list() {
+    return tx(['playlists'], 'readonly', t => reqP(t.objectStore('playlists').getAll()));
+  },
+  async put(pl) {
+    return tx(['playlists'], 'readwrite', t => { t.objectStore('playlists').put(pl); return pl; });
+  },
+  async remove(id) {
+    return tx(['playlists'], 'readwrite', t => { t.objectStore('playlists').delete(id); });
   },
 };
 

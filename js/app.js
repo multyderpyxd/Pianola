@@ -1,11 +1,12 @@
 import { loadMidi, formatTime } from './midi.js';
 import { BleMidi, MockMidi } from './ble.js';
 import { Player, lowerBoundOn } from './player.js';
-import { library, newId, persistStorage, storageEstimate } from './library.js';
+import { library, playlistStore, newId, persistStorage, storageEstimate } from './library.js';
+import { searchOnline, downloadOnline, keyOf, isOnlineId } from './online.js';
 import { odeToJoy, DEMO_TITLE } from './demo.js';
 import { icon, keysArt } from './icons.js';
 
-const VERSION = '1.0.2';
+const VERSION = '1.1.0';
 const $ = s => document.querySelector(s);
 const SIMULATED = new URLSearchParams(location.search).has('demo');
 
@@ -13,7 +14,7 @@ const SIMULATED = new URLSearchParams(location.search).has('demo');
 const ble = SIMULATED ? new MockMidi() : new BleMidi();
 const player = new Player(ble);
 
-const defaults = { keepAwake: true, background: false, muteDrums: false, mode: 'original', repeat: 'off', shuffle: false, sort: 'recent' };
+const defaults = { keepAwake: true, background: false, muteDrums: false, mode: 'original', repeat: 'off', shuffle: false, sort: 'recent', volume: 127 };
 const settings = { ...defaults, ...readJSON('pianola.settings') };
 function saveSettings() { try { localStorage.setItem('pianola.settings', JSON.stringify(settings)); } catch {} }
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } }
@@ -29,6 +30,23 @@ let resumeAfterReconnect = false;
 let advanceToken = 0;
 const pendingDelete = new Map();
 const userNotes = new Set();
+
+// Listas
+let playlists = [];
+let openListId = null;          // lista abierta en la pestaña Listas
+let queueName = null;           // nombre de la lista que está sonando
+const pendingListDelete = new Map();
+
+// Explorar (BitMidi)
+const SUGGESTIONS = ['Chopin', 'Debussy', 'Satie', 'Bach', 'Beethoven', 'Liszt', 'Ghibli', 'Final Fantasy', 'Zelda', 'Yiruma', 'Queen', 'Beatles'];
+const online = { q: '', page: 0, pageTotal: 0, total: 0, results: [], loading: false, error: null, ctrl: null, loadingKey: null };
+const onlineIndex = new Map();   // clave → resultado visto
+const onlineCache = new Map();   // clave → archivo descargado
+const transientMeta = new Map(); // clave → metadatos de una canción online sin guardar
+let onlineTimer = null;
+
+// Temporizador de apagado
+const sleepTimer = { mode: null, until: 0, timer: null, tick: null };
 
 player.setMode(settings.mode);
 player.setMuteDrums(settings.muteDrums);
@@ -131,23 +149,51 @@ function metaLine(s) {
   return parts.join(' · ');
 }
 
+const BARS = '<span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>';
+const compact = n => new Intl.NumberFormat('es-ES', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+
 function renderList() {
   const live = songs.filter(s => !pendingDelete.has(s.id));
   $('#countAll').textContent = live.length || '';
-  $('#countFav').textContent = live.filter(s => s.fav).length || '';
-  $('#sortBtn').textContent = SORT_LABEL[settings.sort];
   document.querySelectorAll('.filter').forEach(b => b.classList.toggle('on', b.dataset.filter === filter));
+  $('#sortBtn').hidden = filter === 'online' || filter === 'lists';
+  $('#sortBtn').setAttribute('aria-label', `Orden: ${SORT_LABEL[settings.sort]}. Toca para cambiarlo`);
+  $('#search').placeholder = filter === 'online' ? 'Buscar en BitMidi: Chopin, Ghibli…'
+    : filter === 'lists' ? 'Buscar en tus listas' : 'Buscar en tu biblioteca';
+  if (filter === 'online') return renderOnline();
+  if (filter === 'lists') return renderLists();
+  renderLibrary(live);
+}
 
+function rowState(id) {
+  const isCur = current && current.id === id;
+  return `${isCur ? ' is-current' : ''}${isCur && !player.playing ? ' paused' : ''}`;
+}
+
+function libRow(s) {
+  const isCur = current && current.id === s.id;
+  return `<li class="row${rowState(s.id)}" data-id="${s.id}">
+    <button class="row-main" data-act="play" type="button">
+      <span class="row-title">${isCur ? BARS : ''}<span>${esc(s.title)}</span></span>
+      <span class="row-meta">${metaLine(s)}</span>
+    </button>
+    <button class="icon-btn fav${s.fav ? ' on' : ''}" data-act="fav" type="button" aria-label="${s.fav ? 'Quitar de favoritas' : 'Añadir a favoritas'}" aria-pressed="${s.fav}">${icon.heart}</button>
+    <button class="icon-btn" data-act="more" type="button" aria-label="Más opciones">${icon.more}</button>
+  </li>`;
+}
+
+function renderLibrary(live) {
   const list = visibleSongs();
   const empty = $('#empty');
-  if (!live.length) {
+  if (!live.length && !query) {
     $('#list').innerHTML = '';
     empty.hidden = false;
     empty.innerHTML = `${keysArt}
       <h2>Tu piano, tu repertorio</h2>
-      <p>Añade archivos MIDI y Pianola los tocará en tu FP-10 por Bluetooth.</p>
+      <p>Añade archivos MIDI o búscalos online, y Pianola los tocará en tu FP-10 por Bluetooth.</p>
       <div class="btns">
         <button class="btn primary" data-empty="add" type="button">${icon.plus} Añadir MIDI</button>
+        <button class="btn ghost" data-empty="explore" type="button">${icon.search} Explorar online</button>
         <button class="btn ghost" data-empty="demo" type="button">Probar con una demo</button>
       </div>
       <p class="hint">También puedes compartir un .mid desde WhatsApp, Drive o Descargas y elegir Pianola.</p>`;
@@ -158,52 +204,536 @@ function renderList() {
     empty.hidden = false;
     empty.innerHTML = filter === 'fav' && !query
       ? '<h2>Sin favoritas aún</h2><p>Toca el corazón de una canción para tenerla a mano aquí.</p>'
-      : `<h2>Nada por aquí</h2><p>Ninguna canción coincide con «${esc(query)}».</p>`;
+      : `<h2>Nada por aquí</h2><p>Ninguna canción de tu biblioteca coincide con «${esc(query)}».</p>
+         <div class="btns"><button class="btn ghost" data-empty="explore" type="button">${icon.search} Buscar en BitMidi</button></div>`;
     return;
   }
   empty.hidden = true;
-  const playing = player.playing;
-  $('#list').innerHTML = list.map(s => {
-    const isCur = current && current.id === s.id;
-    return `<li class="row${isCur ? ' is-current' : ''}${isCur && !playing ? ' paused' : ''}" data-id="${s.id}">
-      <button class="row-main" data-act="play" type="button">
-        <span class="row-title">${isCur ? '<span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>' : ''}<span>${esc(s.title)}</span></span>
-        <span class="row-meta">${metaLine(s)}</span>
+  const hint = query.length >= 2
+    ? `<li class="online-hint"><button type="button" data-act="go-online">${icon.search}<span>Buscar «${esc(query)}» en BitMidi</span></button></li>` : '';
+  $('#list').innerHTML = list.map(libRow).join('') + hint;
+}
+
+// ---------- Explorar: repertorio online ----------
+function savedFor(it) {
+  return it ? songs.find(s => s.source === it.source && s.sourceId === it.sourceId && !pendingDelete.has(s.id)) : null;
+}
+
+function onlineRow(it) {
+  const key = keyOf(it);
+  const saved = savedFor(it);
+  const id = saved ? saved.id : key;
+  const isCur = current && current.id === id;
+  const loading = online.loadingKey === key;
+  const known = saved || transientMeta.get(key);
+  const meta = loading ? 'Descargando…' : [
+    known ? formatTime(known.duration) : null,
+    it.plays ? `${compact(it.plays)} reproducciones` : null,
+    saved ? 'en tu biblioteca' : null,
+  ].filter(Boolean).join(' · ') || 'BitMidi';
+  return `<li class="row${rowState(id)}${loading ? ' loading' : ''}" data-key="${key}">
+    <button class="row-main" data-act="oplay" type="button">
+      <span class="row-title">${isCur ? BARS : ''}<span>${esc(it.title)}</span></span>
+      <span class="row-meta">${meta}</span>
+    </button>
+    <button class="icon-btn save${saved ? ' on' : ''}" data-act="osave" type="button" aria-label="${saved ? 'Ya está en tu biblioteca' : 'Guardar en la biblioteca'}">${saved ? icon.check : icon.plus}</button>
+  </li>`;
+}
+
+function renderOnline() {
+  const list = $('#list');
+  const empty = $('#empty');
+  if (!online.q) {
+    list.innerHTML = '';
+    empty.hidden = false;
+    empty.innerHTML = `<h2>Explora el repertorio</h2>
+      <p>Más de 100.000 MIDIs públicos de BitMidi. Toca uno para oírlo en el piano y ＋ para guardarlo.</p>
+      <div class="suggest">${SUGGESTIONS.map(q => `<button class="chip-s" type="button" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
+      <p class="hint">Muchos son arreglos de canciones con derechos de autor: están para escucharlos tú.</p>`;
+    return;
+  }
+  if (!online.results.length) {
+    list.innerHTML = '';
+    empty.hidden = false;
+    if (online.loading) empty.innerHTML = `<p class="loading">Buscando «${esc(online.q)}» en BitMidi…</p>`;
+    else if (online.error) empty.innerHTML = `<h2>Sin conexión con BitMidi</h2>
+      <p>Comprueba que tienes internet e inténtalo de nuevo.</p>
+      <div class="btns"><button class="btn ghost" type="button" data-empty="retry">Reintentar</button></div>`;
+    else empty.innerHTML = `<h2>Sin resultados</h2><p>Prueba con otras palabras, el título en inglés o el nombre del compositor.</p>`;
+    return;
+  }
+  empty.hidden = true;
+  const note = `<li class="list-note">${online.total.toLocaleString('es-ES')} resultado${online.total === 1 ? '' : 's'} en <a href="https://bitmidi.com" target="_blank" rel="noopener">BitMidi</a></li>`;
+  const more = online.loading
+    ? '<li class="more-row"><p class="list-note loading">Cargando…</p></li>'
+    : online.page + 1 < online.pageTotal
+      ? '<li class="more-row"><button class="btn ghost block" data-act="omore" type="button">Cargar más</button></li>' : '';
+  list.innerHTML = note + online.results.map(onlineRow).join('') + more;
+}
+
+function scheduleOnlineSearch(now = false) {
+  clearTimeout(onlineTimer);
+  const q = query;
+  if (q.length < 2) {
+    online.ctrl?.abort();
+    Object.assign(online, { q: '', results: [], total: 0, pageTotal: 0, page: 0, loading: false, error: null });
+    renderList();
+    return;
+  }
+  if (q === online.q && !online.error && (online.results.length || online.loading)) { renderList(); return; }
+  onlineTimer = setTimeout(() => runOnlineSearch(q, 0), now ? 0 : 450);
+}
+
+async function runOnlineSearch(q, page) {
+  online.ctrl?.abort();
+  const ctrl = new AbortController();
+  online.ctrl = ctrl;
+  if (page === 0) Object.assign(online, { q, results: [], total: 0, pageTotal: 0, page: 0 });
+  online.loading = true;
+  online.error = null;
+  renderList();
+  try {
+    const r = await searchOnline(q, page, { signal: ctrl.signal });
+    r.results.forEach(it => onlineIndex.set(keyOf(it), it));
+    const seen = new Set(online.results.map(keyOf));
+    online.results = page === 0 ? r.results : online.results.concat(r.results.filter(it => !seen.has(keyOf(it))));
+    if (page === 0 || r.total) { online.total = r.total; online.pageTotal = r.pageTotal; }
+    if (r.results.length) online.page = page;
+    else online.pageTotal = Math.min(online.pageTotal, page);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    online.error = e.message || String(e);
+    if (online.results.length) toast('No se pudieron cargar más resultados');
+  } finally {
+    if (online.ctrl === ctrl) { online.loading = false; renderList(); }
+  }
+}
+
+async function fetchOnlineData(key) {
+  if (onlineCache.has(key)) return onlineCache.get(key);
+  const it = onlineIndex.get(key);
+  if (!it) throw new Error('canción desconocida');
+  online.loadingKey = key;
+  renderList();
+  try {
+    const buf = await downloadOnline(it);
+    onlineCache.set(key, buf);
+    if (onlineCache.size > 40) onlineCache.delete(onlineCache.keys().next().value);
+    return buf;
+  } finally {
+    if (online.loadingKey === key) online.loadingKey = null;
+    renderList();
+  }
+}
+
+function transientFrom(key, tl) {
+  const it = onlineIndex.get(key);
+  const m = {
+    id: key, title: it?.title || 'Canción online', duration: tl.duration, noteCount: tl.noteCount,
+    trackCount: tl.trackCount, hasDrums: tl.hasDrums, transient: true,
+    source: it?.source, sourceId: it?.sourceId, sourceUrl: it?.pageUrl,
+  };
+  transientMeta.set(key, m);
+  return m;
+}
+
+function playOnline(key) {
+  const it = onlineIndex.get(key);
+  if (!it) return;
+  const id = savedFor(it)?.id || key;
+  if (current && current.id === id && player.tl) { openPlayer(); if (!player.playing) togglePlay(); return; }
+  const ids = online.results.map(r => savedFor(r)?.id || keyOf(r));
+  queueName = null;
+  startQueue(ids, Math.max(0, ids.indexOf(id)));
+}
+
+async function saveOnline(key, { quiet = false } = {}) {
+  const it = onlineIndex.get(key);
+  if (!it) return null;
+  const existing = savedFor(it);
+  if (existing) { if (!quiet) toast('Ya está en tu biblioteca'); return existing; }
+  try {
+    const buf = await fetchOnlineData(key);
+    const r = await addBuffer(buf, it.name, it.title, { source: it.source, sourceId: it.sourceId, sourceUrl: it.pageUrl });
+    if (r === 'bad') { toast('Ese archivo no es un MIDI válido'); return null; }
+    if (r === 'dup') { if (!quiet) toast('Ya está en tu biblioteca'); return savedFor(it); }
+    // si estaba sonando como canción temporal, pasa a ser la de la biblioteca
+    if (current && current.id === key) current = r;
+    queue = queue.map(x => (x === key ? r.id : x));
+    baseQueue = baseQueue.map(x => (x === key ? r.id : x));
+    transientMeta.delete(key);
+    persistStorage();
+    if (!quiet) toast('Guardada en tu biblioteca', { action: 'Añadir a lista', onAction: () => addToListSheet(r.id) });
+    return r;
+  } catch {
+    toast('No se pudo descargar de BitMidi');
+    return null;
+  } finally {
+    renderList();
+    updateNowPlaying();
+  }
+}
+
+function goOnline() {
+  filter = 'online';
+  scheduleOnlineSearch(true);
+  renderList();
+  scrollTo(0, 0);
+}
+
+// ---------- Listas ----------
+function playlistSongs(pl) {
+  return pl.songIds.map(id => songs.find(s => s.id === id)).filter(s => s && !pendingDelete.has(s.id));
+}
+function plMeta(pl) {
+  const ss = playlistSongs(pl);
+  if (!ss.length) return 'Vacía';
+  return `${plural(ss.length, 'canción', 'canciones')} · ${formatTime(ss.reduce((a, s) => a + (s.duration || 0), 0))}`;
+}
+async function savePlaylist(pl) {
+  pl.updatedAt = Date.now();
+  try { await playlistStore.put(pl); } catch (e) { console.warn(e); }
+}
+
+function renderLists() {
+  const list = $('#list');
+  const empty = $('#empty');
+  const live = playlists.filter(p => !pendingListDelete.has(p.id));
+  const open = openListId && live.find(p => p.id === openListId);
+  if (open) return renderPlaylist(open);
+  openListId = null;
+  if (!live.length) {
+    list.innerHTML = '';
+    empty.hidden = false;
+    empty.innerHTML = `<h2>Tus listas</h2>
+      <p>Junta varias canciones y Pianola las tocará una detrás de otra. Ideal para dormirte con el piano.</p>
+      <div class="btns"><button class="btn primary" type="button" data-empty="lnew">${icon.plus} Crear una lista</button></div>`;
+    return;
+  }
+  empty.hidden = true;
+  let shown = live.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  if (query) { const q = norm(query); shown = shown.filter(p => norm(p.name).includes(q)); }
+  list.innerHTML = `<li class="online-hint"><button type="button" data-act="lnew">${icon.plus}<span>Nueva lista</span></button></li>`
+    + shown.map(p => `<li class="row" data-pl="${p.id}">
+      <button class="row-main" data-act="lopen" type="button">
+        <span class="row-title">${queueName === p.name && current ? BARS : ''}<span>${esc(p.name)}</span></span>
+        <span class="row-meta">${plMeta(p)}</span>
       </button>
-      <button class="icon-btn fav${s.fav ? ' on' : ''}" data-act="fav" type="button" aria-label="${s.fav ? 'Quitar de favoritas' : 'Añadir a favoritas'}" aria-pressed="${s.fav}">${icon.heart}</button>
-      <button class="icon-btn" data-act="more" type="button" aria-label="Más opciones">${icon.more}</button>
-    </li>`;
-  }).join('');
+      <button class="icon-btn lplay" data-act="lplay" type="button" aria-label="Reproducir «${esc(p.name)}»">${icon.playSmall}</button>
+      <button class="icon-btn" data-act="lmore" type="button" aria-label="Opciones de la lista">${icon.more}</button>
+    </li>`).join('')
+    + (shown.length ? '' : `<li class="pl-empty">Ninguna lista coincide con «${esc(query)}».</li>`);
+}
+
+function renderPlaylist(pl) {
+  $('#empty').hidden = true;
+  const ss = playlistSongs(pl);
+  $('#list').innerHTML = `<li class="pl-head" data-pl="${pl.id}">
+      <button class="back" type="button" data-act="lback">${icon.back}Listas</button>
+      <h2>${esc(pl.name)}</h2>
+      <p>${plMeta(pl)}</p>
+      <div class="btns-row">
+        <button class="btn primary" type="button" data-act="lplay"${ss.length ? '' : ' disabled'}>${icon.playSmall} Reproducir</button>
+        <button class="btn ghost" type="button" data-act="ladd">${icon.plus} Añadir</button>
+      </div>
+    </li>`
+    + (ss.length ? ss.map((s, i) => {
+      const isCur = current && current.id === s.id;
+      return `<li class="row${rowState(s.id)}" data-id="${s.id}" data-pl="${pl.id}">
+        <span class="num">${i + 1}</span>
+        <button class="row-main" data-act="pplay" type="button">
+          <span class="row-title">${isCur ? BARS : ''}<span>${esc(s.title)}</span></span>
+          <span class="row-meta">${metaLine(s)}</span>
+        </button>
+        <button class="icon-btn" data-act="pmore" type="button" aria-label="Opciones de la canción en la lista">${icon.more}</button>
+      </li>`;
+    }).join('') : '<li class="pl-empty">Lista vacía. Toca «Añadir» para elegir canciones.</li>');
+}
+
+function playPlaylist(plId, startId = null) {
+  const pl = playlists.find(p => p.id === plId);
+  if (!pl) return;
+  const ids = playlistSongs(pl).map(s => s.id);
+  if (!ids.length) { pickSongsSheet(plId); return; }
+  if (startId && current && current.id === startId && player.tl && queueName === pl.name) {
+    openPlayer(); if (!player.playing) togglePlay(); return;
+  }
+  queueName = pl.name;
+  startQueue(ids, startId ? Math.max(0, ids.indexOf(startId)) : 0);
+}
+
+function newPlaylistSheet(addSongId = null) {
+  const n = playlists.length + 1;
+  openSheet(`<h3>Nueva lista</h3>
+    <form id="plForm">
+      <input class="field" id="plName" maxlength="80" placeholder="Para dormir" autocomplete="off" aria-label="Nombre de la lista">
+      <div class="btns-row">
+        <button class="btn ghost" type="button" data-cancel>Cancelar</button>
+        <button class="btn primary" type="submit">Crear</button>
+      </div>
+    </form>`, {
+    onOpen: body => {
+      const input = body.querySelector('#plName');
+      setTimeout(() => input.focus(), 250);
+      body.querySelector('[data-cancel]').onclick = closeSheet;
+      body.querySelector('#plForm').onsubmit = async e => {
+        e.preventDefault();
+        const name = input.value.trim() || `Lista ${n}`;
+        const pl = { id: newId(), name, songIds: addSongId ? [addSongId] : [], createdAt: Date.now() };
+        playlists.push(pl);
+        await savePlaylist(pl);
+        if (addSongId) { closeSheet(); renderList(); toast(`Añadida a «${name}»`); return; }
+        filter = 'lists';
+        openListId = pl.id;
+        renderList();
+        pickSongsSheet(pl.id);
+      };
+    },
+  });
+}
+
+function pickSongsSheet(plId) {
+  const pl = playlists.find(p => p.id === plId);
+  if (!pl) return;
+  const coll = new Intl.Collator('es', { sensitivity: 'base', numeric: true });
+  const lib = songs.filter(s => !pendingDelete.has(s.id)).sort((a, b) => coll.compare(a.title, b.title));
+  if (!lib.length) {
+    openSheet(`<h3>Tu biblioteca está vacía</h3>
+      <p class="sub">Añade MIDIs o guarda canciones desde Explorar, y luego vuelve a esta lista.</p>
+      <div class="btns-row"><button class="btn ghost" type="button" data-a="explore">Explorar</button>
+      <button class="btn primary" type="button" data-a="add">Añadir MIDI</button></div>`, {
+      onOpen: body => body.addEventListener('click', e => {
+        const a = e.target.closest('[data-a]')?.dataset.a;
+        if (a === 'explore') { closeSheet(); goOnline(); }
+        else if (a === 'add') { closeSheet(); $('#fileInput').click(); }
+      }),
+    });
+    return;
+  }
+  const inList = new Set(pl.songIds);
+  const picked = [];
+  openSheet(`<h3>Añadir a «${esc(pl.name)}»</h3>
+    <input class="field" type="search" id="pickSearch" placeholder="Buscar en tu biblioteca" autocomplete="off" aria-label="Buscar">
+    <ul class="pick-list">${lib.map(s => `<li><label class="pick${inList.has(s.id) ? ' in' : ''}" data-t="${esc(norm(s.title))}">
+      <input type="checkbox" value="${s.id}"${inList.has(s.id) ? ' checked disabled' : ''}>
+      <span class="txt"><b>${esc(s.title)}</b><small>${formatTime(s.duration)}${inList.has(s.id) ? ' · ya está en la lista' : ''}</small></span>
+    </label></li>`).join('')}</ul>
+    <div class="sheet-foot"><button class="btn primary block" type="button" data-a="done" disabled>Elige canciones</button></div>`, {
+    onOpen: body => {
+      const done = body.querySelector('[data-a="done"]');
+      body.addEventListener('change', e => {
+        const cb = e.target;
+        if (cb.type !== 'checkbox') return;
+        if (cb.checked) picked.push(cb.value);
+        else picked.splice(picked.indexOf(cb.value), 1);
+        done.disabled = !picked.length;
+        done.textContent = picked.length ? `Añadir ${plural(picked.length, 'canción', 'canciones')}` : 'Elige canciones';
+      });
+      body.querySelector('#pickSearch').addEventListener('input', e => {
+        const q = norm(e.target.value.trim());
+        body.querySelectorAll('.pick').forEach(l => { l.parentElement.hidden = !!q && !l.dataset.t.includes(q); });
+      });
+      done.addEventListener('click', async () => {
+        const add = picked.filter(x => !pl.songIds.includes(x));
+        pl.songIds.push(...add);
+        await savePlaylist(pl);
+        closeSheet();
+        renderList();
+        toast(`${plural(add.length, 'canción añadida', 'canciones añadidas')} a «${pl.name}»`);
+      });
+    },
+  });
+}
+
+function addToListSheet(songId) {
+  const s = songs.find(x => x.id === songId);
+  if (!s) return;
+  const lists = playlists.filter(p => !pendingListDelete.has(p.id));
+  openSheet(`<h3>Añadir a una lista</h3>
+    <p class="sub">${esc(s.title)}</p>
+    <ul class="menu list-pick">
+      ${lists.map(p => `<li><button type="button" data-l="${p.id}"><span>${esc(p.name)}</span>
+        <small>${p.songIds.includes(songId) ? 'ya está' : plMeta(p)}</small></button></li>`).join('')}
+      <li><button type="button" data-l="new" class="accent-text">＋ Nueva lista…</button></li>
+    </ul>`, {
+    onOpen: body => body.addEventListener('click', async e => {
+      const l = e.target.closest('[data-l]')?.dataset.l;
+      if (!l) return;
+      if (l === 'new') { newPlaylistSheet(songId); return; }
+      const pl = playlists.find(p => p.id === l);
+      if (!pl) return;
+      if (!pl.songIds.includes(songId)) { pl.songIds.push(songId); await savePlaylist(pl); }
+      closeSheet();
+      renderList();
+      toast(`Añadida a «${pl.name}»`);
+    }),
+  });
+}
+
+function playlistMenu(plId) {
+  const pl = playlists.find(p => p.id === plId);
+  if (!pl) return;
+  openSheet(`<h3>${esc(pl.name)}</h3><p class="sub">${plMeta(pl)}</p>
+    <ul class="menu">
+      <li><button type="button" data-m="play">Reproducir</button></li>
+      <li><button type="button" data-m="add">Añadir canciones</button></li>
+      <li><button type="button" data-m="rename">Renombrar</button></li>
+      <li><button type="button" data-m="delete" class="danger">Eliminar lista</button></li>
+    </ul>`, {
+    onOpen: body => body.addEventListener('click', e => {
+      const m = e.target.closest('[data-m]')?.dataset.m;
+      if (m === 'play') { closeSheet(); playPlaylist(plId); }
+      else if (m === 'add') pickSongsSheet(plId);
+      else if (m === 'rename') renamePlaylistSheet(plId);
+      else if (m === 'delete') { closeSheet(); deletePlaylist(plId); }
+    }),
+  });
+}
+
+function renamePlaylistSheet(plId) {
+  const pl = playlists.find(p => p.id === plId);
+  openSheet(`<h3>Renombrar lista</h3>
+    <form id="rnForm">
+      <input class="field" id="rnInput" value="${esc(pl.name)}" maxlength="80" autocomplete="off" aria-label="Nombre">
+      <div class="btns-row"><button class="btn ghost" type="button" data-cancel>Cancelar</button><button class="btn primary" type="submit">Guardar</button></div>
+    </form>`, {
+    onOpen: body => {
+      const input = body.querySelector('#rnInput');
+      setTimeout(() => { input.focus(); input.select(); }, 250);
+      body.querySelector('[data-cancel]').onclick = closeSheet;
+      body.querySelector('#rnForm').onsubmit = async e => {
+        e.preventDefault();
+        const name = input.value.trim();
+        if (name) {
+          if (queueName === pl.name) queueName = name;
+          pl.name = name;
+          await savePlaylist(pl);
+          renderList();
+          updateNowPlaying();
+        }
+        closeSheet();
+      };
+    },
+  });
+}
+
+function deletePlaylist(plId) {
+  const pl = playlists.find(p => p.id === plId);
+  if (!pl) return;
+  if (openListId === plId) openListId = null;
+  const timer = setTimeout(async () => {
+    pendingListDelete.delete(plId);
+    playlists = playlists.filter(p => p.id !== plId);
+    try { await playlistStore.remove(plId); } catch {}
+  }, 5000);
+  pendingListDelete.set(plId, timer);
+  renderList();
+  toast(`Lista «${pl.name}» eliminada`, {
+    action: 'Deshacer', ms: 5000,
+    onAction: () => { clearTimeout(pendingListDelete.get(plId)); pendingListDelete.delete(plId); renderList(); },
+  });
+}
+
+function playlistSongMenu(plId, songId) {
+  const pl = playlists.find(p => p.id === plId);
+  const s = songs.find(x => x.id === songId);
+  if (!pl || !s) return;
+  const idx = pl.songIds.indexOf(songId);
+  openSheet(`<h3>${esc(s.title)}</h3><p class="sub">En «${esc(pl.name)}» · ${metaLine(s)}</p>
+    <ul class="menu">
+      <li><button type="button" data-m="play">Reproducir desde aquí</button></li>
+      ${idx > 0 ? '<li><button type="button" data-m="up">Subir</button></li>' : ''}
+      ${idx < pl.songIds.length - 1 ? '<li><button type="button" data-m="down">Bajar</button></li>' : ''}
+      <li><button type="button" data-m="remove" class="danger">Quitar de la lista</button></li>
+    </ul>`, {
+    onOpen: body => body.addEventListener('click', async e => {
+      const m = e.target.closest('[data-m]')?.dataset.m;
+      if (!m) return;
+      closeSheet();
+      if (m === 'play') { playPlaylist(plId, songId); return; }
+      const i = pl.songIds.indexOf(songId);
+      if (m === 'up' && i > 0) [pl.songIds[i - 1], pl.songIds[i]] = [pl.songIds[i], pl.songIds[i - 1]];
+      else if (m === 'down' && i < pl.songIds.length - 1) [pl.songIds[i + 1], pl.songIds[i]] = [pl.songIds[i], pl.songIds[i + 1]];
+      else if (m === 'remove') pl.songIds.splice(i, 1);
+      await savePlaylist(pl);
+      renderList();
+    }),
+  });
 }
 
 $('#list').addEventListener('click', e => {
-  const btn = e.target.closest('button[data-act]');
+  const btn = e.target.closest('[data-act]');
   if (!btn) return;
-  const id = btn.closest('.row').dataset.id;
-  const act = btn.dataset.act;
-  if (act === 'play') {
-    const ids = visibleSongs().map(s => s.id);
-    if (current && current.id === id && player.tl) { openPlayer(); if (!player.playing) togglePlay(); return; }
-    startQueue(ids, ids.indexOf(id));
-  } else if (act === 'fav') toggleFav(id);
-  else if (act === 'more') songMenu(id);
+  const holder = btn.closest('[data-id],[data-key],[data-pl]');
+  const id = holder?.dataset.id;
+  const key = holder?.dataset.key;
+  const plId = holder?.dataset.pl;
+  switch (btn.dataset.act) {
+    case 'play': {
+      const ids = visibleSongs().map(s => s.id);
+      if (current && current.id === id && player.tl) { openPlayer(); if (!player.playing) togglePlay(); return; }
+      queueName = null;
+      startQueue(ids, ids.indexOf(id));
+      break;
+    }
+    case 'fav': toggleFav(id); break;
+    case 'more': songMenu(id); break;
+    case 'go-online': goOnline(); break;
+    case 'oplay': playOnline(key); break;
+    case 'osave': saveOnline(key); break;
+    case 'omore': runOnlineSearch(online.q, online.page + 1); break;
+    case 'lnew': newPlaylistSheet(); break;
+    case 'lopen': openListId = plId; renderList(); scrollTo(0, 0); break;
+    case 'lback': openListId = null; renderList(); break;
+    case 'lplay': playPlaylist(plId); break;
+    case 'lmore': playlistMenu(plId); break;
+    case 'ladd': pickSongsSheet(plId); break;
+    case 'pplay': playPlaylist(plId, id); break;
+    case 'pmore': playlistSongMenu(plId, id); break;
+  }
 });
 
 $('#empty').addEventListener('click', e => {
+  const chip = e.target.closest('[data-q]');
+  if (chip) {
+    $('#search').value = chip.dataset.q;
+    query = chip.dataset.q;
+    scheduleOnlineSearch(true);
+    return;
+  }
   const b = e.target.closest('[data-empty]');
   if (!b) return;
-  if (b.dataset.empty === 'add') $('#fileInput').click();
-  else addDemo();
+  const a = b.dataset.empty;
+  if (a === 'add') $('#fileInput').click();
+  else if (a === 'demo') addDemo();
+  else if (a === 'explore') goOnline();
+  else if (a === 'retry') runOnlineSearch(online.q || query, 0);
+  else if (a === 'lnew') newPlaylistSheet();
 });
 
-document.querySelectorAll('.filter').forEach(b => b.addEventListener('click', () => { filter = b.dataset.filter; renderList(); }));
+document.querySelectorAll('.filter').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.filter === 'lists' && filter === 'lists') openListId = null;
+  filter = b.dataset.filter;
+  if (filter === 'online') scheduleOnlineSearch(true);
+  renderList();
+}));
 $('#sortBtn').addEventListener('click', () => {
   const order = ['recent', 'az', 'plays'];
   settings.sort = order[(order.indexOf(settings.sort) + 1) % order.length];
   saveSettings();
   renderList();
+  toast(`Orden: ${SORT_LABEL[settings.sort]}`, { ms: 1400 });
 });
-$('#search').addEventListener('input', e => { query = e.target.value.trim(); renderList(); });
+$('#search').addEventListener('input', e => {
+  query = e.target.value.trim();
+  if (filter === 'online') scheduleOnlineSearch();
+  else renderList();
+});
+$('#search').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  e.target.blur();
+  if (filter === 'online') scheduleOnlineSearch(true);
+});
 
 async function toggleFav(id) {
   const s = songs.find(x => x.id === id);
@@ -213,21 +743,45 @@ async function toggleFav(id) {
   try { await library.update(id, { fav: s.fav }); } catch {}
 }
 
+function onlineMenu(key) {
+  const it = onlineIndex.get(key);
+  const m = transientMeta.get(key);
+  if (!it && !m) return;
+  const url = it?.pageUrl || m?.sourceUrl || 'https://bitmidi.com';
+  openSheet(`<h3>${esc(it?.title || m?.title)}</h3>
+    <p class="sub">BitMidi${m ? ` · ${metaLine(m)}` : ''} · sin guardar</p>
+    <ul class="menu">
+      <li><button type="button" data-m="save">Guardar en la biblioteca</button></li>
+      <li><button type="button" data-m="list">Guardar y añadir a una lista…</button></li>
+      <li><a href="${esc(url)}" target="_blank" rel="noopener">Ver en BitMidi ↗</a></li>
+    </ul>`, {
+    onOpen: body => body.addEventListener('click', async e => {
+      const a = e.target.closest('[data-m]')?.dataset.m;
+      if (a === 'save') { closeSheet(); saveOnline(key); }
+      else if (a === 'list') { const r = await saveOnline(key, { quiet: true }); if (r) addToListSheet(r.id); else closeSheet(); }
+    }),
+  });
+}
+
 function songMenu(id) {
+  if (isOnlineId(id)) return onlineMenu(id);
   const s = songs.find(x => x.id === id);
   if (!s) return;
   openSheet(`<h3>${esc(s.title)}</h3>
     <p class="sub">${metaLine(s)} · ${plural(s.noteCount, 'nota', 'notas')}</p>
     <ul class="menu">
       <li><button type="button" data-m="play">Reproducir</button></li>
+      <li><button type="button" data-m="list">Añadir a una lista…</button></li>
       <li><button type="button" data-m="fav">${s.fav ? 'Quitar de favoritas' : 'Añadir a favoritas'}</button></li>
       <li><button type="button" data-m="rename">Renombrar</button></li>
+      ${s.sourceUrl ? `<li><a href="${esc(s.sourceUrl)}" target="_blank" rel="noopener">Ver en BitMidi ↗</a></li>` : ''}
       <li><button type="button" data-m="delete" class="danger">Eliminar de la biblioteca</button></li>
     </ul>`, {
     onOpen: body => body.addEventListener('click', e => {
       const m = e.target.closest('[data-m]')?.dataset.m;
       if (!m) return;
-      if (m === 'play') { closeSheet(); const ids = visibleSongs().map(x => x.id); startQueue(ids, Math.max(0, ids.indexOf(id))); }
+      if (m === 'play') { closeSheet(); const ids = visibleSongs().map(x => x.id); queueName = null; startQueue(ids, Math.max(0, ids.indexOf(id))); }
+      else if (m === 'list') addToListSheet(id);
       else if (m === 'fav') { closeSheet(); toggleFav(id); }
       else if (m === 'rename') renameSheet(id);
       else if (m === 'delete') { closeSheet(); removeSong(id); }
@@ -279,6 +833,9 @@ function removeSong(id) {
     pendingDelete.delete(id);
     songs = songs.filter(x => x.id !== id);
     try { await library.remove(id); } catch {}
+    for (const pl of playlists) {
+      if (pl.songIds.includes(id)) { pl.songIds = pl.songIds.filter(x => x !== id); savePlaylist(pl); }
+    }
   }, 5000);
   pendingDelete.set(id, timer);
   renderList();
@@ -313,10 +870,11 @@ async function importFiles(files) {
   if (added) persistStorage();
 }
 
-async function addBuffer(buf, fileName, title) {
+async function addBuffer(buf, fileName, title, extra = {}) {
   let tl;
   try { tl = loadMidi(buf); } catch { return 'bad'; }
   if (!tl.noteCount) return 'bad';
+  if (extra.sourceId && songs.some(s => s.source === extra.source && s.sourceId === extra.sourceId)) return 'dup';
   if (songs.some(s => s.fileName === fileName && s.size === buf.byteLength)) return 'dup';
   const meta = {
     id: newId(),
@@ -330,6 +888,7 @@ async function addBuffer(buf, fileName, title) {
     addedAt: Date.now(),
     plays: 0,
     fav: false,
+    ...extra,
   };
   await library.add(meta, buf);
   songs.push(meta);
@@ -452,6 +1011,7 @@ ble.addEventListener('state', e => {
     toast('Se perdió la conexión. Reconectando…', { ms: 8000 });
   } else if (state === 'connected') {
     updateMediaSession();
+    if (settings.volume < 127) setTimeout(() => sendVolume(settings.volume), 300);
     if (resumeAfterReconnect) { resumeAfterReconnect = false; player.play(); toast('Reconectado'); }
   } else if (state === 'idle') {
     if (player.playing) player.pause();
@@ -552,12 +1112,20 @@ async function startAt(i, { autoplay = true, gap = 0 } = {}) {
   const token = ++advanceToken;
   qi = i;
   const id = queue[i];
-  const meta = songs.find(s => s.id === id);
-  if (!meta) return;
+  let meta = songs.find(s => s.id === id);
   let tl;
-  try { tl = loadMidi(await library.data(id)); }
-  catch { toast('No se pudo leer esa canción'); return; }
+  try {
+    let buf;
+    if (meta) buf = await library.data(id);
+    else if (isOnlineId(id)) buf = await fetchOnlineData(id);
+    else return;
+    tl = loadMidi(buf);
+  } catch {
+    if (token === advanceToken) toast(isOnlineId(id) ? 'No se pudo descargar esa canción de BitMidi' : 'No se pudo leer esa canción');
+    return;
+  }
   if (token !== advanceToken) return;
+  if (!meta) meta = transientFrom(id, tl);
   if (current?.id !== meta.id) player.setSpeed(1);   // cada canción empieza a su tempo
   current = meta;
   player.load(tl);
@@ -567,9 +1135,11 @@ async function startAt(i, { autoplay = true, gap = 0 } = {}) {
   if (gap) { await sleep(gap); if (token !== advanceToken) return; }
   if (autoplay && ble.connected) {
     player.play();
-    meta.plays = (meta.plays || 0) + 1;
-    meta.lastPlayed = Date.now();
-    library.update(id, { plays: meta.plays, lastPlayed: meta.lastPlayed }).catch(() => {});
+    if (!meta.transient) {
+      meta.plays = (meta.plays || 0) + 1;
+      meta.lastPlayed = Date.now();
+      library.update(id, { plays: meta.plays, lastPlayed: meta.lastPlayed }).catch(() => {});
+    }
   }
 }
 
@@ -603,7 +1173,14 @@ function prev() {
   startAt((qi - 1 + queue.length) % queue.length);
 }
 
-player.addEventListener('ended', () => next({ auto: true }));
+player.addEventListener('ended', () => {
+  if (sleepTimer.mode === 'end') {
+    setSleep(null);
+    toast('Temporizador: música detenida. Buenas noches', { ms: 6000 });
+    return;
+  }
+  next({ auto: true });
+});
 player.addEventListener('state', () => {
   clock.postMessage(player.playing ? 'start' : 'stop');
   updateTransport();
@@ -648,10 +1225,12 @@ function updateNowPlaying() {
   $('#nowTitle').textContent = current.title;
   const tl = player.tl;
   const parts = [];
+  if (queueName && queue.length > 1 && qi >= 0) parts.push(`${qi + 1} de ${queue.length} · ${queueName}`);
   if (tl) {
     parts.push(plural(tl.noteCount, 'nota', 'notas'));
     if (tl.trackCount > 1) parts.push(plural(tl.trackCount, 'pista', 'pistas'));
   }
+  if (current.transient) parts.push('BitMidi, sin guardar');
   $('#nowMeta').textContent = parts.join(' · ');
   $('#seek').max = Math.max(1, Math.round(player.duration));
   $('#tDur').textContent = formatTime(player.duration);
@@ -676,6 +1255,17 @@ function updateTransport() {
   $('#soundChip').textContent = settings.mode === 'piano' ? 'Sonido: piano del FP-10' : 'Sonido original';
   $('#soundChip').classList.toggle('on', settings.mode === 'piano');
   $('#playerKicker').textContent = ble.connected ? `En ${ble.name}` : 'Piano sin conectar';
+  $('#saveChip').hidden = !current?.transient;
+  const sc = $('#sleepChip');
+  sc.classList.toggle('on', !!sleepTimer.mode);
+  sc.textContent = sleepTimer.mode === 'time'
+    ? `Para en ${Math.max(1, Math.ceil((sleepTimer.until - Date.now()) / 60000))} min`
+    : sleepTimer.mode === 'end' ? 'Para al acabar esta' : 'Temporizador';
+  const vol = $('#volume');
+  if (vol && document.activeElement !== vol) {
+    vol.value = settings.volume;
+    vol.style.setProperty('--p', `${(settings.volume / 127) * 100}%`);
+  }
   updateProgress(true);
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
 }
@@ -735,6 +1325,65 @@ $('#soundChip').addEventListener('click', () => {
     : 'Cada pista con su instrumento (sonidos GM2 del piano)', { ms: 3200 });
 });
 $('#speedChip').addEventListener('click', speedSheet);
+$('#saveChip').addEventListener('click', () => { if (current?.transient) saveOnline(current.id); });
+$('#sleepChip').addEventListener('click', sleepSheet);
+
+function setSleep(mode, minutes = 0) {
+  clearTimeout(sleepTimer.timer);
+  clearInterval(sleepTimer.tick);
+  sleepTimer.mode = mode;
+  sleepTimer.until = 0;
+  if (mode === 'time') {
+    sleepTimer.until = Date.now() + minutes * 60000;
+    sleepTimer.timer = setTimeout(() => {
+      // se cumplió el tiempo: deja terminar la canción en curso
+      clearInterval(sleepTimer.tick);
+      if (player.playing) { sleepTimer.mode = 'end'; sleepTimer.until = 0; }
+      else setSleep(null);
+      updateTransport();
+    }, minutes * 60000);
+    sleepTimer.tick = setInterval(updateTransport, 20000);
+  }
+  updateTransport();
+}
+
+function sleepSheet() {
+  openSheet(`<h3>Temporizador</h3>
+    <p class="sub">Cuando se cumpla el tiempo, Pianola deja terminar la canción que esté sonando y se detiene.</p>
+    <div class="sleep-opts">${[15, 30, 45, 60, 90, 120].map(m => `<button class="preset" type="button" data-min="${m}">${m} min</button>`).join('')}</div>
+    <ul class="menu">
+      <li><button type="button" data-s="end">Al terminar esta canción</button></li>
+      ${sleepTimer.mode ? '<li><button type="button" data-s="off" class="danger">Desactivar temporizador</button></li>' : ''}
+    </ul>`, {
+    onOpen: body => body.addEventListener('click', e => {
+      const min = e.target.closest('[data-min]')?.dataset.min;
+      const sv = e.target.closest('[data-s]')?.dataset.s;
+      if (!min && !sv) return;
+      if (min) { setSleep('time', +min); toast(`Pianola parará dentro de ${min} minutos`); }
+      else if (sv === 'end') { setSleep('end'); toast('Parará al terminar esta canción'); }
+      else { setSleep(null); toast('Temporizador desactivado'); }
+      closeSheet();
+    }),
+  });
+}
+
+// Volumen general del piano (SysEx universal «Master Volume», que el FP-10 recibe)
+let volTimer = null;
+function sendVolume(v) {
+  if (!ble.connected) return;
+  ble.send([0xf0, 0x7f, 0x7f, 0x04, 0x01, 0x00, Math.max(0, Math.min(127, v | 0)), 0xf7]);
+}
+$('#volume').addEventListener('input', e => {
+  const v = +e.target.value;
+  settings.volume = v;
+  e.target.style.setProperty('--p', `${(v / 127) * 100}%`);
+  if (!volTimer) volTimer = setTimeout(() => { volTimer = null; sendVolume(settings.volume); }, 60);
+});
+$('#volume').addEventListener('change', () => {
+  saveSettings();
+  sendVolume(settings.volume);
+  if (!ble.connected) toast('Conecta el piano para cambiar su volumen');
+});
 
 function speedSheet() {
   const render = body => {
@@ -1001,6 +1650,7 @@ function kick() { if (!raf) raf = requestAnimationFrame(frame); }
 
 // ---------- Iconos estáticos ----------
 $('#settingsBtn').innerHTML = icon.tune;
+$('#sortBtn').innerHTML = icon.sort;
 $('#addBtn').innerHTML = icon.plus;
 document.querySelector('.search-ico').innerHTML = icon.search;
 $('#miniNext').innerHTML = icon.next;
@@ -1025,6 +1675,7 @@ async function init() {
   renderConn();
   updateNowPlaying();
   try { songs = await library.list(); } catch (e) { console.warn(e); songs = []; }
+  try { playlists = await playlistStore.list(); } catch (e) { console.warn(e); playlists = []; }
   renderList();
   await importInbox();
   if ('serviceWorker' in navigator && !SIMULATED) {

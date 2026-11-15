@@ -17,6 +17,11 @@ export const icon = {
   search: s('<circle cx="10.8" cy="10.8" r="6.2"/><path d="m15.5 15.5 4 4"/>'),
   bt: s('<path d="m7 7.5 10 9-5 4.2V3.3l5 4.2-10 9"/>'),
   close: s('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>'),
+  check: s('<path d="M5.5 12.5l4.2 4.2L18.5 8"/>', 'stroke-width="2"'),
+  back: s('<path d="M14.5 6 8.5 12l6 6"/>'),
+  sort: s('<path d="M8 5v14M8 5 5 8.2M8 5l3 3.2M16 19V5M16 19l-3-3.2M16 19l3-3.2"/>'),
+  moon: s('<path d="M19.5 14.6A7.6 7.6 0 0 1 9.4 4.5a7.6 7.6 0 1 0 10.1 10.1z"/>'),
+  playSmall: f('<path d="M8.5 6.2c0-.7.8-1.1 1.4-.7l8.4 5.4c.5.4.5 1.1 0 1.5l-8.4 5.4c-.6.4-1.4 0-1.4-.7z"/>'),
 };
 
 export const keysArt = `<svg viewBox="0 0 168 84" width="168" height="84" aria-hidden="true" class="keys-art">

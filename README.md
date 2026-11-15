@@ -5,6 +5,10 @@ Web app instalable (PWA) que reproduce archivos MIDI en un Roland FP-10 por Blue
 ## Qué hace
 
 - Biblioteca local de canciones (IndexedDB): importar varios `.mid` a la vez, buscar, favoritas, renombrar, eliminar con «Deshacer» y ordenar por recientes, A–Z o más tocadas.
+- **Explorar**: busca en el archivo público de [BitMidi](https://bitmidi.com) (más de 100.000 MIDIs), escucha cualquier resultado en el piano sin guardarlo y guárdalo con ＋. La API de búsqueda y las descargas de BitMidi admiten CORS, así que no hace falta servidor propio.
+- **Listas**: crea listas, añade canciones (selector múltiple o desde el menú de cada canción), reordénalas y reprodúcelas de principio a fin.
+- **Temporizador**: para la música tras 15–120 min o al terminar la canción, dejando acabar la que suena.
+- **Volumen del piano** desde el móvil con el mensaje universal *Master Volume* (`F0 7F 7F 04 01 00 vv F7`), que el FP-10 recibe según su MIDI Implementation.
 - Recibe archivos desde «Compartir» en Android (WhatsApp, Drive, Descargas…) una vez instalada.
 - Reproductor con cola, siguiente/anterior, aleatorio, repetir (lista o canción), barra de posición y velocidad de 25 % a 200 %.
 - Dos modos de sonido: **original** (cada pista con su instrumento GM2 del piano) y **piano del FP-10** (todo por el canal 4, que suena con el tono elegido en el panel; sin batería).
@@ -55,7 +59,6 @@ index.html, styles.css, manifest.webmanifest, sw.js
 js/midi.js          lector SMF + línea temporal en ms (+ escritor mínimo)
 js/ble.js           Bluetooth MIDI: conexión, empaquetado, cola de escritura, entrada
 js/player.js        reloj, envío a tiempo, saltos con recuperación de estado, modos
-js/library.js       IndexedDB
 js/app.js           interfaz
 js/clock-worker.js  reloj en un worker
 js/demo.js          «Himno de la alegría» generado al vuelo

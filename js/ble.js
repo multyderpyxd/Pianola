@@ -16,6 +16,15 @@ export function buildPacket(queue, ts, mtu = DEFAULT_MTU) {
   let taken = 0;
   while (taken < queue.length) {
     const m = queue[taken];
+    if (m[0] === 0xf0) {
+      // SysEx corto: [ts] F0 … datos … [ts] F7 (la marca de tiempo va también antes del F7)
+      if (out.length + m.length + 2 > mtu) break;
+      out.push(lo);
+      for (let i = 0; i < m.length - 1; i++) out.push(m[i]);
+      out.push(lo, 0xf7);
+      taken++;
+      continue;
+    }
     if (out.length + 1 + m.length > mtu) break;
     out.push(lo);
     for (let i = 0; i < m.length; i++) out.push(m[i]);

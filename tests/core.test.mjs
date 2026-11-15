@@ -151,3 +151,12 @@ test('descarta notas muy atrasadas (pestaña congelada) pero apaga bien', () => 
   p.stop();
   assert.equal(hanging(sent), 0);
 });
+
+test('SysEx de volumen general: cabe en un paquete y lleva marca antes del F7', () => {
+  const sx = [0xf0, 0x7f, 0x7f, 0x04, 0x01, 0x00, 0x50, 0xf7];
+  const { packet, taken } = buildPacket([[0x90, 60, 100], sx, [0x80, 60, 0]], 0x0123, 20);
+  assert.equal(taken, 3);
+  const lo = 0x80 | (0x0123 & 0x7f);
+  assert.deepEqual([...packet], [0x80 | ((0x0123 >> 7) & 0x3f), lo, 0x90, 60, 100, lo, 0xf0, 0x7f, 0x7f, 0x04, 0x01, 0x00, 0x50, lo, 0xf7, lo, 0x80, 60, 0]);
+  assert.ok(packet.length <= 20);
+});

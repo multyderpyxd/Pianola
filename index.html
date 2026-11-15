@@ -32,10 +32,12 @@
       <button class="add-btn" id="addBtn" type="button" aria-label="Añadir canciones MIDI"></button>
     </div>
 
-    <nav class="filters" aria-label="Filtro">
+    <nav class="filters" aria-label="Secciones">
       <button type="button" class="filter on" data-filter="all">Todas <span class="count" id="countAll"></span></button>
-      <button type="button" class="filter" data-filter="fav">Favoritas <span class="count" id="countFav"></span></button>
-      <button type="button" class="sort" id="sortBtn">Recientes</button>
+      <button type="button" class="filter" data-filter="fav">Favoritas</button>
+      <button type="button" class="filter" data-filter="lists">Listas</button>
+      <button type="button" class="filter" data-filter="online">Explorar</button>
+      <button type="button" class="icon-btn sort" id="sortBtn" aria-label="Cambiar orden"></button>
     </nav>
 
     <ul class="list" id="list" aria-label="Canciones"></ul>
@@ -77,9 +79,16 @@
       <button class="icon-btn light big" id="nextBtn" type="button" aria-label="Siguiente"></button>
       <button class="icon-btn light toggle" id="repeatBtn" type="button" aria-label="Repetir" data-mode="off"></button>
     </div>
+    <label class="volume-row">
+      <span class="vol-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 9.5h3l4-3.5v12l-4-3.5h-3z"/></svg></span>
+      <input type="range" id="volume" min="0" max="127" step="1" value="127" aria-label="Volumen del piano">
+      <span class="vol-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 9.5h3l4-3.5v12l-4-3.5h-3z"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"/></svg></span>
+    </label>
     <div class="chips">
       <button class="chip" id="speedChip" type="button">Velocidad 100 %</button>
       <button class="chip" id="soundChip" type="button">Sonido original</button>
+      <button class="chip" id="sleepChip" type="button">Temporizador</button>
+      <button class="chip save" id="saveChip" type="button" hidden>Guardar</button>
     </div>
   </section>
 
