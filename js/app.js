@@ -1,4 +1,5 @@
-import { loadMidi, formatTime } from './midi.js';
+import { loadMidi, parseMidi, buildTimeline, formatTime } from './midi.js';
+import { analyzeMidi, LABELS } from './quality.js';
 import { BleMidi, MockMidi } from './ble.js';
 import { Player, lowerBoundOn } from './player.js';
 import { library, playlistStore, newId, persistStorage, storageEstimate } from './library.js';
@@ -6,7 +7,7 @@ import { searchOnline, downloadOnline, keyOf, isOnlineId } from './online.js';
 import { odeToJoy, DEMO_TITLE } from './demo.js';
 import { icon, keysArt } from './icons.js';
 
-const VERSION = '1.1.1';
+const VERSION = '1.2.0';
 const $ = s => document.querySelector(s);
 const SIMULATED = new URLSearchParams(location.search).has('demo');
 
@@ -14,7 +15,7 @@ const SIMULATED = new URLSearchParams(location.search).has('demo');
 const ble = SIMULATED ? new MockMidi() : new BleMidi();
 const player = new Player(ble);
 
-const defaults = { keepAwake: true, background: false, muteDrums: false, mode: 'original', repeat: 'off', shuffle: false, sort: 'recent', volume: 127 };
+const defaults = { keepAwake: true, background: false, muteDrums: false, mode: 'original', repeat: 'off', shuffle: false, sort: 'recent', volume: 127, analyzeOnline: true };
 const settings = { ...defaults, ...readJSON('pianola.settings') };
 function saveSettings() { try { localStorage.setItem('pianola.settings', JSON.stringify(settings)); } catch {} }
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } }
@@ -44,6 +45,16 @@ const onlineIndex = new Map();   // clave → resultado visto
 const onlineCache = new Map();   // clave → archivo descargado
 const transientMeta = new Map(); // clave → metadatos de una canción online sin guardar
 let onlineTimer = null;
+online.sort = 'relevance';
+online.onlyPerformed = false;
+
+// Calidad de resultados online: se calcula al vuelo y se guarda en el móvil
+const qcache = new Map(Object.entries(readJSON('pianola.qcache')));
+const qfailed = new Set();
+const analyzing = new Set();
+let qActive = 0;
+let qSaveTimer = null;
+let renderTimer = null;
 
 // Temporizador de apagado
 const sleepTimer = { mode: null, until: 0, timer: null, tick: null };
@@ -136,11 +147,60 @@ function visibleSongs() {
   const coll = new Intl.Collator('es', { sensitivity: 'base', numeric: true });
   if (settings.sort === 'az') list.sort((a, b) => coll.compare(a.title, b.title));
   else if (settings.sort === 'plays') list.sort((a, b) => (b.plays || 0) - (a.plays || 0) || (b.lastPlayed || 0) - (a.lastPlayed || 0));
+  else if (settings.sort === 'quality') list.sort((a, b) => (b.quality?.score ?? -1) - (a.quality?.score ?? -1));
   else list.sort((a, b) => b.addedAt - a.addedAt);
   return list;
 }
 
-const SORT_LABEL = { recent: 'Recientes', az: 'A–Z', plays: 'Más tocadas' };
+const SORT_LABEL = { recent: 'Recientes', az: 'A–Z', plays: 'Más tocadas', quality: 'Mejor calidad' };
+
+// ---------- Calidad ----------
+const Q_VERSION = 1;
+function summarizeQuality(q) {
+  const f = q.features || {};
+  return {
+    v: Q_VERSION, score: q.score, label: q.label, pianoOnly: !!q.pianoOnly, reasons: (q.reasons || []).slice(0, 6),
+    f: {
+      velDistinct: f.velDistinct, gridness: f.gridness, syncFrac: f.syncFrac, chordSpreadMs: f.chordSpreadMs,
+      pedalEvents: f.pedalEvents, pedalValues: f.pedalValues, tempoPerMin: f.tempoPerMin, offVelDistinct: f.offVelDistinct, software: f.software,
+    },
+  };
+}
+function analyzeBuffer(buf) {
+  const midi = parseMidi(buf);
+  const tl = buildTimeline(midi);
+  let quality = null;
+  try { quality = summarizeQuality(analyzeMidi(midi, tl)); } catch (e) { console.warn('calidad', e); }
+  return { tl, quality };
+}
+function qBadge(q) {
+  if (!q) return '';
+  return `<span class="q q-${q.label}" title="${esc(LABELS[q.label].long)}">${LABELS[q.label].short} ${q.score}</span>`;
+}
+const pct = x => (x === null || x === undefined ? '—' : `${Math.round(x * 100)} %`);
+function qualitySheet(q, title) {
+  if (!q) { toast('Aún no se ha analizado esta canción'); return; }
+  const f = q.f || {};
+  openSheet(`<h3>${esc(title)}</h3>
+    <div class="qhead q-${q.label}">
+      <span class="qnum">${q.score}</span>
+      <span><b>${LABELS[q.label].short}</b><small>${LABELS[q.label].long}</small></span>
+    </div>
+    <h4>Por qué</h4>
+    <ul class="qreasons">${q.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>
+    <h4>Datos</h4>
+    <dl class="qstats">
+      <dt>Fuerzas de nota distintas</dt><dd>${f.velDistinct ?? '—'}</dd>
+      <dt>Ataques en rejilla exacta</dt><dd>${pct(f.gridness)}</dd>
+      <dt>Acordes con notas simultáneas</dt><dd>${pct(f.syncFrac)}</dd>
+      <dt>Escalonado medio de acordes</dt><dd>${f.chordSpreadMs ? `${f.chordSpreadMs} ms` : '—'}</dd>
+      <dt>Pedal</dt><dd>${f.pedalEvents ? `${f.pedalEvents} movimientos, ${f.pedalValues} niveles` : 'no usa'}</dd>
+      <dt>Cambios de tempo por minuto</dt><dd>${f.tempoPerMin ?? '—'}</dd>
+      <dt>Velocidades al soltar tecla</dt><dd>${f.offVelDistinct ?? 0}</dd>
+      ${f.software ? `<dt>Programa</dt><dd>${esc(f.software)}</dd>` : ''}
+    </dl>
+    <p class="foot">${q.pianoOnly ? 'Piano solo' : 'Arreglo con varios instrumentos'} · Análisis automático; puede equivocarse con archivos «humanizados» por software.</p>`);
+}
 
 function metaLine(s) {
   const parts = [formatTime(s.duration)];
@@ -175,7 +235,7 @@ function libRow(s) {
   return `<li class="row${rowState(s.id)}" data-id="${s.id}">
     <button class="row-main" data-act="play" type="button">
       <span class="row-title">${isCur ? BARS : ''}<span>${esc(s.title)}</span></span>
-      <span class="row-meta">${metaLine(s)}</span>
+      <span class="row-meta">${metaLine(s)}${qBadge(s.quality)}</span>
     </button>
     <button class="icon-btn fav${s.fav ? ' on' : ''}" data-act="fav" type="button" aria-label="${s.fav ? 'Quitar de favoritas' : 'Añadir a favoritas'}" aria-pressed="${s.fav}">${icon.heart}</button>
     <button class="icon-btn" data-act="more" type="button" aria-label="Más opciones">${icon.more}</button>
@@ -219,18 +279,64 @@ function savedFor(it) {
   return it ? songs.find(s => s.source === it.source && s.sourceId === it.sourceId && !pendingDelete.has(s.id)) : null;
 }
 
+function qOf(it) {
+  return savedFor(it)?.quality || qcache.get(keyOf(it)) || null;
+}
+function saveQCache() {
+  clearTimeout(qSaveTimer);
+  qSaveTimer = setTimeout(() => {
+    try { localStorage.setItem('pianola.qcache', JSON.stringify(Object.fromEntries([...qcache.entries()].slice(-3000)))); } catch {}
+  }, 800);
+}
+function scheduleRender() {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(() => { if (filter === 'online') renderList(); }, 150);
+}
+function pumpAnalysis() {
+  if (!settings.analyzeOnline || filter !== 'online') return;
+  while (qActive < 3) {
+    const it = online.results.find(r => { const k = keyOf(r); return !qOf(r) && !analyzing.has(k) && !qfailed.has(k); });
+    if (!it) return;
+    const key = keyOf(it);
+    analyzing.add(key);
+    qActive++;
+    (async () => {
+      try {
+        let buf = onlineCache.get(key);
+        if (!buf) {
+          buf = await downloadOnline(it);
+          onlineCache.set(key, buf);
+          if (onlineCache.size > 40) onlineCache.delete(onlineCache.keys().next().value);
+        }
+        const { tl, quality } = analyzeBuffer(buf);
+        if (quality) { qcache.set(key, { ...quality, d: Math.round(tl.duration) }); saveQCache(); }
+        else qfailed.add(key);
+      } catch {
+        qfailed.add(key);
+      } finally {
+        analyzing.delete(key);
+        qActive--;
+        scheduleRender();
+        pumpAnalysis();
+      }
+    })();
+  }
+}
+
 function onlineRow(it) {
   const key = keyOf(it);
   const saved = savedFor(it);
   const id = saved ? saved.id : key;
   const isCur = current && current.id === id;
   const loading = online.loadingKey === key;
-  const known = saved || transientMeta.get(key);
-  const meta = loading ? 'Descargando…' : [
+  const q = qOf(it);
+  const known = saved || transientMeta.get(key) || (q?.d ? { duration: q.d } : null);
+  const meta = loading ? 'Descargando…' : ([
     known ? formatTime(known.duration) : null,
     it.plays ? `${compact(it.plays)} reproducciones` : null,
     saved ? 'en tu biblioteca' : null,
-  ].filter(Boolean).join(' · ') || 'BitMidi';
+  ].filter(Boolean).join(' · ') || 'BitMidi')
+    + (q ? qBadge(q) : analyzing.has(key) ? '<span class="q q-wait">analizando…</span>' : '');
   return `<li class="row${rowState(id)}${loading ? ' loading' : ''}" data-key="${key}">
     <button class="row-main" data-act="oplay" type="button">
       <span class="row-title">${isCur ? BARS : ''}<span>${esc(it.title)}</span></span>
@@ -263,12 +369,23 @@ function renderOnline() {
     return;
   }
   empty.hidden = true;
-  const note = `<li class="list-note">${online.total.toLocaleString('es-ES')} resultado${online.total === 1 ? '' : 's'} en <a href="https://bitmidi.com" target="_blank" rel="noopener">BitMidi</a></li>`;
+  let shown = online.results.slice();
+  if (online.onlyPerformed) shown = shown.filter(it => qOf(it)?.label === 'performed');
+  if (online.sort === 'quality') shown.sort((a, b) => (qOf(b)?.score ?? -1) - (qOf(a)?.score ?? -1));
+  const pending = settings.analyzeOnline ? online.results.filter(it => !qOf(it) && !qfailed.has(keyOf(it))).length : 0;
+  const note = `<li class="list-note">${online.total.toLocaleString('es-ES')} resultado${online.total === 1 ? '' : 's'} en <a href="https://bitmidi.com" target="_blank" rel="noopener">BitMidi</a>${pending ? ` · analizando ${pending}…` : ''}</li>
+    <li class="list-tools">
+      <button class="chip-s${online.sort === 'quality' ? ' on' : ''}" type="button" data-act="osort">${online.sort === 'quality' ? 'Orden: mejor calidad' : 'Orden: relevancia'}</button>
+      <button class="chip-s${online.onlyPerformed ? ' on' : ''}" type="button" data-act="operf" aria-pressed="${online.onlyPerformed}">Solo interpretadas</button>
+    </li>`;
+  const none = online.onlyPerformed && !shown.length
+    ? `<li class="pl-empty">${pending ? 'Buscando interpretaciones reales entre los resultados…' : 'Ninguna interpretación real en estos resultados. Prueba a cargar más o con otra búsqueda.'}</li>` : '';
   const more = online.loading
     ? '<li class="more-row"><p class="list-note loading">Cargando…</p></li>'
     : online.page + 1 < online.pageTotal
       ? '<li class="more-row"><button class="btn ghost block" data-act="omore" type="button">Cargar más</button></li>' : '';
-  list.innerHTML = note + online.results.map(onlineRow).join('') + more;
+  list.innerHTML = note + shown.map(onlineRow).join('') + none + more;
+  pumpAnalysis();
 }
 
 function scheduleOnlineSearch(now = false) {
@@ -330,7 +447,7 @@ function transientFrom(key, tl) {
   const it = onlineIndex.get(key);
   const m = {
     id: key, title: it?.title || 'Canción online', duration: tl.duration, noteCount: tl.noteCount,
-    trackCount: tl.trackCount, hasDrums: tl.hasDrums, transient: true,
+    trackCount: tl.trackCount, hasDrums: tl.hasDrums, transient: true, quality: qcache.get(key) || null,
     source: it?.source, sourceId: it?.sourceId, sourceUrl: it?.pageUrl,
   };
   transientMeta.set(key, m);
@@ -443,7 +560,7 @@ function renderPlaylist(pl) {
         <span class="num">${i + 1}</span>
         <button class="row-main" data-act="pplay" type="button">
           <span class="row-title">${isCur ? BARS : ''}<span>${esc(s.title)}</span></span>
-          <span class="row-meta">${metaLine(s)}</span>
+          <span class="row-meta">${metaLine(s)}${qBadge(s.quality)}</span>
         </button>
         <button class="icon-btn" data-act="pmore" type="button" aria-label="Opciones de la canción en la lista">${icon.more}</button>
       </li>`;
@@ -682,6 +799,8 @@ $('#list').addEventListener('click', e => {
     case 'oplay': playOnline(key); break;
     case 'osave': saveOnline(key); break;
     case 'omore': runOnlineSearch(online.q, online.page + 1); break;
+    case 'osort': online.sort = online.sort === 'quality' ? 'relevance' : 'quality'; renderList(); break;
+    case 'operf': online.onlyPerformed = !online.onlyPerformed; renderList(); break;
     case 'lnew': newPlaylistSheet(); break;
     case 'lopen': openListId = plId; renderList(); scrollTo(0, 0); break;
     case 'lback': openListId = null; renderList(); break;
@@ -718,7 +837,7 @@ document.querySelectorAll('.filter').forEach(b => b.addEventListener('click', ()
   renderList();
 }));
 $('#sortBtn').addEventListener('click', () => {
-  const order = ['recent', 'az', 'plays'];
+  const order = ['recent', 'az', 'plays', 'quality'];
   settings.sort = order[(order.indexOf(settings.sort) + 1) % order.length];
   saveSettings();
   renderList();
@@ -753,11 +872,13 @@ function onlineMenu(key) {
     <ul class="menu">
       <li><button type="button" data-m="save">Guardar en la biblioteca</button></li>
       <li><button type="button" data-m="list">Guardar y añadir a una lista…</button></li>
+      ${qcache.get(key) ? `<li><button type="button" data-m="quality">Ficha de calidad · ${LABELS[qcache.get(key).label].short} ${qcache.get(key).score}</button></li>` : ''}
       <li><a href="${esc(url)}" target="_blank" rel="noopener">Ver en BitMidi ↗</a></li>
     </ul>`, {
     onOpen: body => body.addEventListener('click', async e => {
       const a = e.target.closest('[data-m]')?.dataset.m;
       if (a === 'save') { closeSheet(); saveOnline(key); }
+      else if (a === 'quality') qualitySheet(qcache.get(key), it?.title || m?.title);
       else if (a === 'list') { const r = await saveOnline(key, { quiet: true }); if (r) addToListSheet(r.id); else closeSheet(); }
     }),
   });
@@ -772,6 +893,7 @@ function songMenu(id) {
     <ul class="menu">
       <li><button type="button" data-m="play">Reproducir</button></li>
       <li><button type="button" data-m="list">Añadir a una lista…</button></li>
+      <li><button type="button" data-m="quality">Ficha de calidad${s.quality ? ` · ${LABELS[s.quality.label].short} ${s.quality.score}` : ''}</button></li>
       <li><button type="button" data-m="fav">${s.fav ? 'Quitar de favoritas' : 'Añadir a favoritas'}</button></li>
       <li><button type="button" data-m="rename">Renombrar</button></li>
       ${s.sourceUrl ? `<li><a href="${esc(s.sourceUrl)}" target="_blank" rel="noopener">Ver en BitMidi ↗</a></li>` : ''}
@@ -782,6 +904,7 @@ function songMenu(id) {
       if (!m) return;
       if (m === 'play') { closeSheet(); const ids = visibleSongs().map(x => x.id); queueName = null; startQueue(ids, Math.max(0, ids.indexOf(id))); }
       else if (m === 'list') addToListSheet(id);
+      else if (m === 'quality') qualitySheet(s.quality, s.title);
       else if (m === 'fav') { closeSheet(); toggleFav(id); }
       else if (m === 'rename') renameSheet(id);
       else if (m === 'delete') { closeSheet(); removeSong(id); }
@@ -871,8 +994,8 @@ async function importFiles(files) {
 }
 
 async function addBuffer(buf, fileName, title, extra = {}) {
-  let tl;
-  try { tl = loadMidi(buf); } catch { return 'bad'; }
+  let tl, quality;
+  try { ({ tl, quality } = analyzeBuffer(buf)); } catch { return 'bad'; }
   if (!tl.noteCount) return 'bad';
   if (extra.sourceId && songs.some(s => s.source === extra.source && s.sourceId === extra.sourceId)) return 'dup';
   if (songs.some(s => s.fileName === fileName && s.size === buf.byteLength)) return 'dup';
@@ -888,6 +1011,7 @@ async function addBuffer(buf, fileName, title, extra = {}) {
     addedAt: Date.now(),
     plays: 0,
     fav: false,
+    quality,
     ...extra,
   };
   await library.add(meta, buf);
@@ -1230,6 +1354,8 @@ function updateNowPlaying() {
     parts.push(plural(tl.noteCount, 'nota', 'notas'));
     if (tl.trackCount > 1) parts.push(plural(tl.trackCount, 'pista', 'pistas'));
   }
+  const cq = current.quality || (current.transient && qcache.get(current.id));
+  if (cq) parts.push(`${LABELS[cq.label].short} ${cq.score}`);
   if (current.transient) parts.push('BitMidi, sin guardar');
   $('#nowMeta').textContent = parts.join(' · ');
   $('#seek').max = Math.max(1, Math.round(player.duration));
@@ -1428,6 +1554,8 @@ async function settingsSheet() {
     ${sw('keepAwake', 'Pantalla encendida mientras suena', 'Evita que el móvil se bloquee a mitad de canción.')}
     ${sw('background', 'Seguir sonando fuera de la app', 'Experimental: continúa al cambiar de app o apagar la pantalla, con controles en la notificación. Si está desactivado, la música se pausa al salir.')}
     ${sw('muteDrums', 'Silenciar batería', 'Ignora el canal 10 de los archivos con percusión.')}
+    <h4>Explorar</h4>
+    ${sw('analyzeOnline', 'Analizar la calidad de los resultados', 'Descarga cada resultado (unos KB) para puntuar si es una interpretación real.')}
     <h4>Piano</h4>
     <div class="setting"><span class="txt"><b>${ble.connected ? esc(ble.name) : 'Sin conectar'}</b><small>${ble.supported ? 'Bluetooth MIDI' : 'Este navegador no tiene Bluetooth'}</small></span>
       <button class="btn ghost" type="button" data-a="conn">${ble.connected ? 'Gestionar' : 'Conectar'}</button></div>
@@ -1671,6 +1799,21 @@ if ('launchQueue' in window) {
 }
 
 // ---------- Arranque ----------
+async function backfillQuality() {
+  for (const s of songs) {
+    if (s.quality?.v === Q_VERSION) continue;
+    try {
+      const buf = await library.data(s.id);
+      const { quality } = analyzeBuffer(buf);
+      if (!quality) continue;
+      s.quality = quality;
+      await library.update(s.id, { quality });
+    } catch {}
+    await sleep(20);
+  }
+  renderList();
+}
+
 async function init() {
   renderConn();
   updateNowPlaying();
@@ -1690,6 +1833,7 @@ async function init() {
     });
   }
   ble.reconnectKnown().catch(() => {});
+  setTimeout(() => backfillQuality(), 1200);
 }
 init();
 
