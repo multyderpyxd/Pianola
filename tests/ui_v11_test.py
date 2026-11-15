@@ -37,6 +37,7 @@ async def main():
 
         # Explorar
         await page.click('[data-filter="online"]'); await page.wait_for_timeout(300)
+        await page.click('[data-src="bitmidi"]'); await page.wait_for_timeout(200)
         await page.screenshot(path=OUT + '2-explore.png')
         await page.click('[data-q="Chopin"]'); await page.wait_for_timeout(700)
         await page.screenshot(path=OUT + '3-results.png')
